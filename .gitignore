@@ -30,3 +30,4 @@ htmlcov/
 # —— 数据目录（示例）——
 datasets/
 *.pt
+runs/
