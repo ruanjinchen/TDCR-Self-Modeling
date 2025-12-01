@@ -627,23 +627,49 @@ python train_flowmatching.py \
   --use_cosine_lr \
   --out_dir runs/sim3_mlp_12_1
 
+python train_flowmatching.py \
+  --data_dir datasets/real_2m \
+  --batch_size 8 --epochs 500 --save_every 10 --emb_dim 64\
+  --tr_max_sample_points 4096 --te_max_sample_points 4096 \
+  --cond_mode motors \
+  --pf_backbone mlp \
+  --use_cosine_lr \
+  --out_dir runs/real2_mlp_12_2
 
 export CUDA_VISIBLE_DEVICES=4,5
 torchrun --standalone --nproc_per_node=2 --master_port=29511 \
-  train_flowmatching.py \
-  --data_dir datasets/sim_3m \
-  --batch_size 4 --epochs 500 --save_every 10 \
+python train_flowmatching.py \
+  --data_dir datasets/sim_2m \
+  --batch_size 16 --epochs 500 --save_every 10 --val_every 10 \
   --tr_max_sample_points 20000 --te_max_sample_points 4096 \
-  --cond_mode motors \
+  --cond_mode motors --lr 6e-4 \
   --pf_backbone hybrid \
+  --emb_dim 64 --width 256 --depth 4 --cfg_drop_p 0.0 \
   --ctx_dim 16 \
-  --ctx_stage_channels 80 112 112 \
-  --ctx_stage_blocks 2 2 2 \
+  --ctx_emb_dim 64 \
+  --ctx_stage_channels 64 96 96 \
+  --ctx_stage_blocks 1 1 1 \
   --ctx_stage_res 24 16 8 \
   --ctx_with_se --ctx_with_global --ctx_voxel_normalize \
   --ctx_t_gate_tau 0.97 --ctx_t_gate_k 12 \
   --use_cosine_lr \
-  --out_dir runs/sim3_hybrid_11_30_ctx16
+  --out_dir runs/sim2_hybrid__12_1
 
+python train_flowmatching.py \
+  --data_dir datasets/sim_3m \
+  --batch_size 16 --epochs 500 --save_every 10 --val_every 10 \
+  --tr_max_sample_points 4096 --te_max_sample_points 4096 \
+  --cond_mode motors --lr 6e-4 \
+  --pf_backbone hybrid \
+  --emb_dim 64 --width 256 --depth 4 --cfg_drop_p 0.0 \
+  --ctx_dim 16 \
+  --ctx_emb_dim 64 \
+  --ctx_stage_channels 64 96 96 \
+  --ctx_stage_blocks 1 1 1 \
+  --ctx_stage_res 24 16 8 \
+  --ctx_with_se --ctx_with_global --ctx_voxel_normalize \
+  --ctx_t_gate_tau 0.97 --ctx_t_gate_k 12 \
+  --use_cosine_lr \
+  --out_dir runs/sim3_hybrid__12_1
 
 '''
