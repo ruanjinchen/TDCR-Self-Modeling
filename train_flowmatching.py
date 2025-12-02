@@ -610,32 +610,36 @@ torchrun --standalone --nproc_per_node=2 --master_port=29511 \
 
 python train_flowmatching.py \
   --data_dir datasets/sim_2m \
-  --batch_size 8 --epochs 500 --save_every 10 \
+  --batch_size 8 --epochs 500 --save_every 20 \
   --emb_dim 64 --width 256 --depth 4 \
-  --tr_max_sample_points 4096 --te_max_sample_points 4096 \
+  --tr_max_sample_points 20000 --te_max_sample_points 20000 \
   --cond_mode motors \
   --pf_backbone mlp \
   --use_cosine_lr \
-  --out_dir runs/sim2_mlp_12_1
+  --out_dir runs/sim2_mlp_12_2_2W
 
 python train_flowmatching.py \
   --data_dir datasets/sim_3m \
-  --batch_size 8 --epochs 500 --save_every 10 --emb_dim 64\
-  --tr_max_sample_points 4096 --te_max_sample_points 4096 \
+  --batch_size 8 --epochs 500 --save_every 20 \
+  --emb_dim 64 --width 256 --depth 4 \
+  --tr_max_sample_points 20000 --te_max_sample_points 20000 \
   --cond_mode motors \
   --pf_backbone mlp \
   --use_cosine_lr \
-  --out_dir runs/sim3_mlp_12_1
+  --out_dir runs/sim3_mlp_12_2_2W
 
 python train_flowmatching.py \
   --data_dir datasets/real_2m \
-  --batch_size 8 --epochs 500 --save_every 10 --emb_dim 64\
-  --tr_max_sample_points 4096 --te_max_sample_points 4096 \
+  --batch_size 8 --epochs 500 --save_every 20 \
+  --emb_dim 64 --width 256 --depth 4 \
+  --tr_max_sample_points 20000 --te_max_sample_points 20000 \
   --cond_mode motors \
   --pf_backbone mlp \
   --use_cosine_lr \
-  --out_dir runs/real2_mlp_12_2
+  --out_dir runs/real2_mlp_12_2_2W
 
+
+  
 export CUDA_VISIBLE_DEVICES=4,5
 torchrun --standalone --nproc_per_node=2 --master_port=29511 \
 python train_flowmatching.py \
