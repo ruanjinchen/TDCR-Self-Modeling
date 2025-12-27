@@ -48,8 +48,38 @@ def save_point_cloud_xyz(xyz: torch.Tensor, path: str):
 def save_point_cloud_ply(xyz: torch.Tensor, path: str):
     import numpy as np
     arr = xyz.detach().cpu().numpy() if isinstance(xyz, torch.Tensor) else xyz
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    N = arr.shape[0]
+    arr = np.asarray(arr)
+    assert arr.ndim == 2 and arr.shape[1] in (3, 6), f"save_point_cloud_ply expects (N,3) or (N,6), got {arr.shape}"
+
+    dirn = os.path.dirname(path)
+    if dirn:
+        os.makedirs(dirn, exist_ok=True)
+
+    N, D = arr.shape
+
+    if D == 3:
+        header = [
+            "ply",
+            "format ascii 1.0",
+            f"element vertex {N}",
+            "property float x",
+            "property float y",
+            "property float z",
+            "end_header\n",
+        ]
+        with open(path, "w") as f:
+            f.write("\n".join(header))
+            for p in arr:
+                f.write(f"{p[0]:.6f} {p[1]:.6f} {p[2]:.6f}\n")
+        return
+
+    # D == 6: xyzrgb, rgb is assumed in [-1, 1]
+    xyz_part = arr[:, :3]
+    rgb_part = arr[:, 3:6]
+
+    # map [-1,1] -> [0,255]
+    rgb255 = np.clip((rgb_part + 1.0) * 127.5, 0.0, 255.0).astype(np.uint8)
+
     header = [
         "ply",
         "format ascii 1.0",
@@ -57,12 +87,18 @@ def save_point_cloud_ply(xyz: torch.Tensor, path: str):
         "property float x",
         "property float y",
         "property float z",
+        "property uchar red",
+        "property uchar green",
+        "property uchar blue",
         "end_header\n",
     ]
     with open(path, "w") as f:
         f.write("\n".join(header))
-        for p in arr:
-            f.write(f"{p[0]:.6f} {p[1]:.6f} {p[2]:.6f}\n")
+        for i in range(N):
+            x, y, z = xyz_part[i]
+            r, g, b = rgb255[i]
+            f.write(f"{x:.6f} {y:.6f} {z:.6f} {int(r)} {int(g)} {int(b)}\n")
+
 
 
 
