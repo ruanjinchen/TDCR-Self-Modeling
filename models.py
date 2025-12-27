@@ -76,8 +76,6 @@ class FiLMBlock(nn.Module):
         h: (B*N, C)
         emb: (B, E) -> will be broadcast to (B*N, E) by indexing beforehand
         """
-        in_dim = self.point_dim + emb_dim
-
         h = self.norm(h)
         gamma, beta = self.affine(emb).chunk(2, dim=-1)
         h = h * (1.0 + gamma) + beta
