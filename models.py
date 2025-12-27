@@ -76,6 +76,8 @@ class FiLMBlock(nn.Module):
         h: (B*N, C)
         emb: (B, E) -> will be broadcast to (B*N, E) by indexing beforehand
         """
+        in_dim = self.point_dim + emb_dim
+
         h = self.norm(h)
         gamma, beta = self.affine(emb).chunk(2, dim=-1)
         h = h * (1.0 + gamma) + beta
@@ -88,10 +90,13 @@ class VelocityNet(nn.Module):
     Design: simple MLP with FiLM conditioning by (time embedding || condition embedding).
     This is purposely light and fast for large N.
     """
-    def __init__(self, cond_dim: int, width: int = 512, depth: int = 6, emb_dim: int = 256,
-                 cfg_dropout_p: float = 0.1):
+    def __init__(self, cond_dim: int, point_dim: int = 3,
+                width: int = 512, depth: int = 6, emb_dim: int = 256,
+                cfg_dropout_p: float = 0.1):
+
         super().__init__()
         self.cond_dim = int(cond_dim)
+        self.point_dim = int(point_dim)
         self.emb_dim = int(emb_dim)
         self.cfg_dropout_p = float(cfg_dropout_p)
 
@@ -102,13 +107,13 @@ class VelocityNet(nn.Module):
         nn.init.normal_(self.c_proj.weight, std=0.02); nn.init.zeros_(self.c_proj.bias)
 
         # MLP trunk on per-point coordinates
-        in_dim = 3 + emb_dim  # concatenate per-point coords with global emb
+        in_dim = self.point_dim + emb_dim  # concatenate per-point coords with global emb
         self.input = nn.Linear(in_dim, width)
         self.blocks = nn.ModuleList([
             nn.Sequential(nn.SiLU(), nn.Linear(width, width)) for _ in range(depth - 1)
         ])
         self.films = nn.ModuleList([FiLMBlock(width, emb_dim) for _ in range(depth - 1)])
-        self.out = nn.Sequential(nn.SiLU(), nn.Linear(width, 3))
+        self.out = nn.Sequential(nn.SiLU(), nn.Linear(width, self.point_dim))
 
         # init
         nn.init.kaiming_normal_(self.input.weight, nonlinearity="relu"); nn.init.zeros_(self.input.bias)
@@ -131,7 +136,9 @@ class VelocityNet(nn.Module):
         Returns:
             v: (B, N, 3)
         """
-        B, N, _ = x.shape
+        B, N, D = x.shape
+        assert D == self.point_dim, f"VelocityNet: x has dim {D}, but point_dim={self.point_dim}"
+
         if t.dim() == 1:
             t = t[:, None]
         # time embedding
@@ -166,7 +173,8 @@ class VelocityNet(nn.Module):
         for blk, fim in zip(self.blocks, self.films):
             h = fim(h, emb_bn)
             h = h + blk(h)  # residual
-        v = self.out(h).reshape(B, N, 3)
+        v = self.out(h).reshape(B, N, self.point_dim)
+
         return v
 
     @torch.no_grad()

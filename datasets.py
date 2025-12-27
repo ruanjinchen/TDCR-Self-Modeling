@@ -75,6 +75,8 @@ class TDCRH5PointClouds(Dataset):
                  use_norm: bool = True,
                  tr_sample_size: int = 2048, te_sample_size: int = 2048,
                  cond_mode: str = "motors",
+                 use_rgb: bool = False,
+                 rgb_key: str = "rgb",
                  files=None, **kwargs) -> None:
         super().__init__()
         # Early init
@@ -87,6 +89,10 @@ class TDCRH5PointClouds(Dataset):
         self.tr_n = int(tr_sample_size)
         self.te_n = int(te_sample_size)
         self.cond_mode = str(cond_mode)
+
+        self.use_rgb = bool(use_rgb)
+        self.rgb_key = str(rgb_key)
+        self.point_dim = 6 if self.use_rgb else 3
 
         # Resolve directory
         if data_dir is None and root_dir is not None:
@@ -132,6 +138,21 @@ class TDCRH5PointClouds(Dataset):
                 if key not in f:
                     raise KeyError(f"[TDCR-H5] Missing key '{key}' in file: {fp}")
                 B = int(f[key].shape[0])
+
+                # --- RGB check (only when use_rgb) ---
+                if self.use_rgb:
+                    if self.rgb_key not in f:
+                        raise KeyError(f"[TDCR-H5] Missing key '{self.rgb_key}' in file: {fp} (required by --use_rgb)")
+                    rgb_ds = f[self.rgb_key]
+                    pts_ds = f[key]
+                    # expect rgb: (B, N, 3) and aligned with points
+                    if rgb_ds.ndim != 3 or rgb_ds.shape[0] != pts_ds.shape[0] or rgb_ds.shape[1] != pts_ds.shape[1] or rgb_ds.shape[2] != 3:
+                        raise ValueError(
+                            f"[TDCR-H5] Bad rgb shape in file {fp}: got {tuple(rgb_ds.shape)}, "
+                            f"expect ({pts_ds.shape[0]}, {pts_ds.shape[1]}, 3)"
+                        )
+                # --- end RGB check ---
+
                 self._index.extend([(fi, i) for i in range(B)])
                 self._key_points_map[fi] = key
                 if "motors_norm" in f:
@@ -144,16 +165,20 @@ class TDCRH5PointClouds(Dataset):
 
 
         # Dataset-level stats
-        self.all_points_mean = np.zeros(3, dtype=np.float32)
-        self.all_points_std = np.ones(3, dtype=np.float32)
+        self.all_points_mean = np.zeros(self.point_dim, dtype=np.float32)
+        self.all_points_std = np.ones(self.point_dim, dtype=np.float32)
+
         if not self.use_norm:
             try:
                 with h5py.File(self.files[0], "r") as f0:
                     if ("center" in f0) and ("scale" in f0):
                         c0 = np.asarray(f0["center"][0], dtype=np.float32)
                         s0 = float(np.asarray(f0["scale"][0], dtype=np.float32))
-                        self.all_points_mean = c0
-                        self.all_points_std = np.array([s0, s0, s0], dtype=np.float32)
+                        # xyz mean/std
+                        self.all_points_mean[:3] = c0
+                        self.all_points_std[:3] = np.array([s0, s0, s0], dtype=np.float32)
+                        # rgb mean/std keep as 0/1 (already set by zeros/ones)
+
             except Exception:
                 pass
 
@@ -182,20 +207,38 @@ class TDCRH5PointClouds(Dataset):
         fi, ri = self._index[idx]
         f = self._ensure_open(fi)
         key = self._key_points_map[fi]
-        pts = f[key][ri].astype(np.float32)  # (N,3)
-        N = pts.shape[0]
+
+        pts_xyz = f[key][ri].astype(np.float32)  # (N,3)
+        N = pts_xyz.shape[0]
+
+        rgb = None
+        if self.use_rgb:
+            rgb = f[self.rgb_key][ri].astype(np.float32)  # (N,3), values in [0,255]
+            # normalize to [-1, 1]
+            rgb = rgb / 127.5 - 1.0
 
         tr_idx = self._sample_idx(N, self.tr_n)
         te_idx = self._sample_idx(N, self.te_n)
-        tr_pts = pts[tr_idx]
-        te_pts = pts[te_idx]
+
+        tr_xyz = pts_xyz[tr_idx]
+        te_xyz = pts_xyz[te_idx]
+
+        if self.use_rgb:
+            tr_rgb = rgb[tr_idx]
+            te_rgb = rgb[te_idx]
+            tr_pts = np.concatenate([tr_xyz, tr_rgb], axis=1)  # (K,6)
+            te_pts = np.concatenate([te_xyz, te_rgb], axis=1)  # (K,6)
+        else:
+            tr_pts = tr_xyz
+            te_pts = te_xyz
+
 
         item = {
             "idx": idx,
             "train_points": torch.from_numpy(tr_pts),
             "test_points": torch.from_numpy(te_pts),
-            "mean": torch.from_numpy(self.all_points_mean.reshape(1, 3)),
-            "std": torch.from_numpy(self.all_points_std.reshape(1, 3)),
+            "mean": torch.from_numpy(self.all_points_mean.reshape(1, self.point_dim)),
+            "std": torch.from_numpy(self.all_points_std.reshape(1, self.point_dim)),
         }
 
         if self.cond_mode == "motors" and self._has_motors:
@@ -226,6 +269,9 @@ def get_datasets(args):
         tr_sample_size=getattr(args, "tr_max_sample_points", 2048),
         te_sample_size=getattr(args, "te_max_sample_points", 2048),
         cond_mode=getattr(args, "cond_mode", "motors"),
+        use_rgb=getattr(args, "use_rgb", False),
+        rgb_key=getattr(args, "rgb_key", "rgb"),
+
     )
     # Prefer val/ if exists, else test/
     val_dir = Path(args.data_dir, "val")
@@ -236,6 +282,9 @@ def get_datasets(args):
         tr_sample_size=getattr(args, "tr_max_sample_points", 2048),
         te_sample_size=getattr(args, "te_max_sample_points", 2048),
         cond_mode=getattr(args, "cond_mode", "motors"),
+        use_rgb=getattr(args, "use_rgb", False),
+        rgb_key=getattr(args, "rgb_key", "rgb"),
+
     )
 
     # 训练集子集

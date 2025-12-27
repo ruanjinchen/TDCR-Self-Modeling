@@ -12,7 +12,7 @@ from torch.utils.tensorboard import SummaryWriter
 from models import VelocityNet, HybridMLP
 from utils import (
     EMA, seed_all, init_distributed, cleanup_distributed, cosine_lr,
-    save_point_cloud_ply, save_point_cloud_xyz, count_parameters
+    save_point_cloud_ply, count_parameters
 )
 from datasets import get_datasets, init_np_seed
 
@@ -38,9 +38,9 @@ def sample_noise_like(x: torch.Tensor, std: float = 1.0) -> torch.Tensor:
 
 def build_model(args) -> nn.Module:
     if getattr(args, "pf_backbone", "mlp") == "mlp":
-        # 保持你现在的 MLP 完全不变
         m = VelocityNet(
             cond_dim=args.cond_dim,
+            point_dim=args.point_dim,
             width=args.width,
             depth=args.depth,
             emb_dim=args.emb_dim,
@@ -54,8 +54,7 @@ def build_model(args) -> nn.Module:
 
         m = HybridMLP(
             cond_dim=args.cond_dim,
-            point_dim=3,  # TDCR 现在只用 xyz 点云，没有 RGB
-            # ContextNet（复制你之前的默认）
+            point_dim=args.point_dim,  # 3D or 6D controlled by --use_rgb
             ctx_dim=args.ctx_dim,
             ctx_emb_dim=args.ctx_emb_dim,
             stage_channels=args.ctx_stage_channels,
@@ -172,7 +171,7 @@ def save_vis_samples(args,
                              steps=args.sample_steps,
                              guidance_scale=guidance_scale,
                              use_ema=use_ema)
-        cd = chamfer_l2(pred, pts)                 # (B,)
+        cd = chamfer_l2(pred[..., :3], pts[..., :3])  # only xyz for CD
         cd_mean = float(cd.mean().detach().cpu())
 
         if rank == 0:
@@ -358,6 +357,17 @@ def main():
     parser.add_argument("--cond_mode", type=str, default="motors")
     parser.add_argument("--train_fraction", type=float, default=1.0)
     parser.add_argument("--train_subset_seed", type=int, default=0)
+    # RGB / 6D points
+    parser.add_argument(
+        "--use_rgb", action="store_true", default=False,
+        help="If set, use 6D xyzrgb points. RGB is read from H5 key `--rgb_key` "
+            "and normalized from [0,255] to [-1,1]. Model output will also be 6D."
+    )
+    parser.add_argument(
+        "--rgb_key", type=str, default="rgb",
+        help="H5 dataset key for per-point RGB with shape (B,N,3), values in [0,255]. "
+            "Only used when --use_rgb."
+    )
 
     # Model
     parser.add_argument("--width", type=int, default=512)
@@ -425,6 +435,8 @@ def main():
                         help="多少个 global_step 记录一次 train 指标；<=1 表示每步记录")
 
     args = parser.parse_args()
+    # global point dimension
+    args.point_dim = 6 if args.use_rgb else 3
 
     # ddp init
     is_dist, rank, world_size, local_rank = init_distributed()
@@ -638,42 +650,162 @@ python train_flowmatching.py \
   --use_cosine_lr \
   --out_dir runs/real2_mlp_12_2_2W
 
+python train_flowmatching.py \
+  --data_dir datasets/sim_5m \
+  --batch_size 8 --epochs 1000 --save_every 20 \
+  --emb_dim 64 --width 256 --depth 4 \
+  --tr_max_sample_points 20000 --te_max_sample_points 20000 \
+  --cond_mode motors \
+  --pf_backbone mlp \
+  --use_cosine_lr \
+  --out_dir runs/sim5_mlp_12_16_2W
 
+python train_flowmatching.py \
+  --data_dir datasets/sim_5m_with_base \
+  --batch_size 8 --epochs 1000 --save_every 20 \
+  --emb_dim 64 --width 256 --depth 4 \
+  --tr_max_sample_points 20000 --te_max_sample_points 20000 \
+  --cond_mode motors \
+  --pf_backbone mlp \
+  --use_cosine_lr \
+  --out_dir runs/sim5_with_base_mlp_12_18_2W
+
+python train_flowmatching.py \
+  --data_dir datasets/real_3m_with_base \
+  --batch_size 8 --epochs 500 --save_every 20 \
+  --emb_dim 64 --width 256 --depth 4 \
+  --tr_max_sample_points 20000 --te_max_sample_points 20000 \
+  --cond_mode motors \
+  --pf_backbone mlp \
+  --use_cosine_lr \
+  --out_dir runs/real3m_with_base_mlp_12_25_2W
   
+
+
 export CUDA_VISIBLE_DEVICES=4,5
 torchrun --standalone --nproc_per_node=2 --master_port=29511 \
 python train_flowmatching.py \
   --data_dir datasets/sim_2m \
-  --batch_size 16 --epochs 500 --save_every 10 --val_every 10 \
-  --tr_max_sample_points 20000 --te_max_sample_points 4096 \
-  --cond_mode motors --lr 6e-4 \
+  --batch_size 16 --epochs 500 --save_every 20 \
+  --tr_max_sample_points 20000 --te_max_sample_points 20000 \
+  --cond_mode motors --lr 6e-4 --min_lr 2e-6 \
   --pf_backbone hybrid \
   --emb_dim 64 --width 256 --depth 4 --cfg_drop_p 0.0 \
   --ctx_dim 16 \
   --ctx_emb_dim 64 \
-  --ctx_stage_channels 64 96 96 \
-  --ctx_stage_blocks 1 1 1 \
+  --ctx_stage_channels 80 112 112 \
+  --ctx_stage_blocks 2 2 2 \
   --ctx_stage_res 24 16 8 \
   --ctx_with_se --ctx_with_global --ctx_voxel_normalize \
   --ctx_t_gate_tau 0.97 --ctx_t_gate_k 12 \
   --use_cosine_lr \
-  --out_dir runs/sim2_hybrid__12_1
+  --out_dir runs/sim2_hybrid_12_3
 
 python train_flowmatching.py \
   --data_dir datasets/sim_3m \
-  --batch_size 16 --epochs 500 --save_every 10 --val_every 10 \
-  --tr_max_sample_points 4096 --te_max_sample_points 4096 \
-  --cond_mode motors --lr 6e-4 \
+  --batch_size 16 --epochs 500 --save_every 20 \
+  --tr_max_sample_points 20000 --te_max_sample_points 20000 \
+  --cond_mode motors --lr 6e-4 --min_lr 2e-6 \
   --pf_backbone hybrid \
   --emb_dim 64 --width 256 --depth 4 --cfg_drop_p 0.0 \
   --ctx_dim 16 \
   --ctx_emb_dim 64 \
-  --ctx_stage_channels 64 96 96 \
-  --ctx_stage_blocks 1 1 1 \
+  --ctx_stage_channels 80 112 112 \
+  --ctx_stage_blocks 2 2 2 \
   --ctx_stage_res 24 16 8 \
   --ctx_with_se --ctx_with_global --ctx_voxel_normalize \
   --ctx_t_gate_tau 0.97 --ctx_t_gate_k 12 \
   --use_cosine_lr \
-  --out_dir runs/sim3_hybrid__12_1
+  --out_dir runs/sim3_hybrid_12_3
+
+python train_flowmatching.py \
+  --data_dir datasets/real_2m \
+  --batch_size 16 --epochs 500 --save_every 20 \
+  --tr_max_sample_points 20000 --te_max_sample_points 20000 \
+  --cond_mode motors --lr 6e-4 --min_lr 2e-6 \
+  --pf_backbone hybrid \
+  --emb_dim 64 --width 256 --depth 4 --cfg_drop_p 0.0 \
+  --ctx_dim 16 \
+  --ctx_emb_dim 64 \
+  --ctx_stage_channels 80 112 112 \
+  --ctx_stage_blocks 2 2 2 \
+  --ctx_stage_res 24 16 8 \
+  --ctx_with_se --ctx_with_global --ctx_voxel_normalize \
+  --ctx_t_gate_tau 0.97 --ctx_t_gate_k 12 \
+  --use_cosine_lr \
+  --out_dir runs/real2_hybrid_12_3
+
+
+python train_flowmatching.py \
+  --data_dir datasets/sim_5m \
+  --batch_size 16 --epochs 500 --save_every 20 \
+  --tr_max_sample_points 20000 --te_max_sample_points 20000 \
+  --cond_mode motors --lr 6e-4 --min_lr 2e-6 \
+  --pf_backbone hybrid \
+  --emb_dim 64 --width 256 --depth 4 --cfg_drop_p 0.0 \
+  --ctx_dim 16 \
+  --ctx_emb_dim 64 \
+  --ctx_stage_channels 80 112 112 \
+  --ctx_stage_blocks 2 2 2 \
+  --ctx_stage_res 24 16 8 \
+  --ctx_with_se --ctx_with_global --ctx_voxel_normalize \
+  --ctx_t_gate_tau 0.97 --ctx_t_gate_k 12 \
+  --use_cosine_lr \
+  --out_dir runs/sim5_hybrid_12_17
+
+
+python train_flowmatching.py \
+  --data_dir datasets/sim_5m_with_base \
+  --batch_size 16 --epochs 500 --save_every 20 \
+  --tr_max_sample_points 20000 --te_max_sample_points 20000 \
+  --cond_mode motors --lr 6e-4 --min_lr 2e-6 \
+  --pf_backbone hybrid \
+  --emb_dim 64 --width 256 --depth 4 --cfg_drop_p 0.0 \
+  --ctx_dim 16 \
+  --ctx_emb_dim 64 \
+  --ctx_stage_channels 80 112 112 \
+  --ctx_stage_blocks 2 2 2 \
+  --ctx_stage_res 24 16 8 \
+  --ctx_with_se --ctx_with_global --ctx_voxel_normalize \
+  --ctx_t_gate_tau 0.97 --ctx_t_gate_k 12 \
+  --use_cosine_lr \
+  --out_dir runs/sim5_with_base_hybrid_12_19
+
+
+python train_flowmatching.py \
+  --data_dir datasets/real_3m_with_base \
+  --batch_size 16 --epochs 500 --save_every 20 \
+  --tr_max_sample_points 20000 --te_max_sample_points 20000 \
+  --cond_mode motors --lr 6e-4 --min_lr 2e-6 \
+  --pf_backbone hybrid \
+  --emb_dim 64 --width 256 --depth 4 --cfg_drop_p 0.0 \
+  --ctx_dim 16 \
+  --ctx_emb_dim 64 \
+  --ctx_stage_channels 80 112 112 \
+  --ctx_stage_blocks 2 2 2 \
+  --ctx_stage_res 24 16 8 \
+  --ctx_with_se --ctx_with_global --ctx_voxel_normalize \
+  --ctx_t_gate_tau 0.97 --ctx_t_gate_k 12 \
+  --use_cosine_lr \
+  --out_dir runs/real3m_with_base_hybrid_12_25
+
+
+下面是测试的hybrid的参数：
+python train_flowmatching.py \
+  --data_dir datasets/sim_3m \
+  --batch_size 8 --epochs 500 --save_every 20 \
+  --tr_max_sample_points 20000 --te_max_sample_points 20000 \
+  --cond_mode motors \
+  --pf_backbone hybrid \
+  --lr 3e-4 --min_lr 1e-6 \
+  --emb_dim 64 --width 256 --depth 4 --cfg_drop_p 0.0 \
+  --ctx_dim 16 --ctx_emb_dim 64 \
+  --ctx_stage_channels 80 112 112 \
+  --ctx_stage_blocks 2 2 2 \
+  --ctx_stage_res 24 16 8 \
+  --ctx_with_se --ctx_with_global --ctx_voxel_normalize \
+  --ctx_t_gate_tau 0.70 --ctx_t_gate_k 8 \
+  --use_cosine_lr \
+  --out_dir runs/sim3m_hybrid_tau70_k8_bs8_12_26
 
 '''

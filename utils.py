@@ -65,6 +65,7 @@ def save_point_cloud_ply(xyz: torch.Tensor, path: str):
             f.write(f"{p[0]:.6f} {p[1]:.6f} {p[2]:.6f}\n")
 
 
+
 def default_device():
     return "cuda" if torch.cuda.is_available() else "cpu"
 
