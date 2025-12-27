@@ -31,3 +31,5 @@ htmlcov/
 datasets/
 *.pt
 runs/
+demo_out/
+runs_final/
