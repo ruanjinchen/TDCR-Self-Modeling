@@ -9,6 +9,7 @@ python train_flowmatching.py \
   --cond_mode motors \
   --pf_backbone mlp \
   --use_cosine_lr \
+  --use_rgb --rgb_key rgb \
   --out_dir runs_final/sim_2m_with_base_mlp_12_26
 
 
@@ -22,6 +23,7 @@ python train_flowmatching.py \
   --cond_mode motors \
   --pf_backbone mlp \
   --use_cosine_lr \
+  --use_rgb --rgb_key rgb \
   --out_dir runs_final/sim_3m_with_base_mlp_12_26
 
 '''
