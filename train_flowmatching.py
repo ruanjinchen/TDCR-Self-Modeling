@@ -36,6 +36,37 @@ def make_scaler(enabled: bool):
 def sample_noise_like(x: torch.Tensor, std: float = 1.0) -> torch.Tensor:
     return torch.randn_like(x) * std
 
+def make_point_prior_like(x: torch.Tensor, args) -> torch.Tensor:
+    """
+    x: (B,N,3) or (B,N,6)
+    - xyz prior: N(0, prior_std^2)
+    - rgb prior (when 6D): U(0,1)  (or controlled by args.color_prior)
+    """
+    D = x.shape[-1]
+    if D == 3:
+        return torch.randn_like(x) * args.prior_std
+
+    if D != 6:
+        raise ValueError(f"Unsupported point dim: {D}")
+
+    z = torch.empty_like(x)
+    z[..., :3] = torch.randn_like(x[..., :3]) * args.prior_std
+
+    # default: uniform [0,1]
+    color_prior = getattr(args, "color_prior", "uniform")
+    if color_prior == "uniform":
+        z[..., 3:] = torch.rand_like(x[..., 3:])
+    elif color_prior == "zeros":
+        z[..., 3:] = 0.0
+    elif color_prior == "gauss":
+        std = float(getattr(args, "color_prior_std", 1.0))
+        z[..., 3:] = torch.randn_like(x[..., 3:]) * std
+    else:
+        raise ValueError(f"Unknown color_prior: {color_prior}")
+
+    return z
+
+
 def build_model(args) -> nn.Module:
     if getattr(args, "pf_backbone", "mlp") == "mlp":
         m = VelocityNet(
@@ -76,6 +107,37 @@ def build_model(args) -> nn.Module:
         )
     return m
 
+@torch.no_grad()
+def heun_sampler(model: nn.Module, x0: torch.Tensor, cond: Optional[torch.Tensor],
+                 steps: int = 50, guidance_scale: float = 0.0, use_ema: bool = True) -> torch.Tensor:
+    """
+    Heun / RK2 sampler for dx/dt = v(x,t,cond), integrate t:0->1
+    """
+    device = x0.device
+    dt = 1.0 / steps
+    x = x0
+    net = model.module if hasattr(model, "module") else model
+
+    backup = None
+    if use_ema and hasattr(net, "ema_shadow"):
+        backup = {k: v.detach().clone() for k, v in net.state_dict().items()}
+        net.load_state_dict(net.ema_shadow, strict=True)
+
+    B = x.shape[0]
+    for k in range(steps):
+        t0 = torch.full((B,), k * dt, device=device, dtype=x.dtype)
+        v1 = net.guided_velocity(x, t0, cond, guidance_scale=guidance_scale)
+
+        x_hat = x + v1 * dt
+
+        t1 = torch.full((B,), (k + 1) * dt, device=device, dtype=x.dtype)
+        v2 = net.guided_velocity(x_hat, t1, cond, guidance_scale=guidance_scale)
+
+        x = x + 0.5 * dt * (v1 + v2)
+
+    if backup is not None:
+        net.load_state_dict(backup, strict=True)
+    return x
 
 @torch.no_grad()
 def euler_sampler(model: nn.Module, x0: torch.Tensor, cond: Optional[torch.Tensor],
@@ -166,11 +228,11 @@ def save_vis_samples(args,
         cond = val_batch.get("cond", None)
         if cond is not None:
             cond = cond.to(args.device, non_blocking=True).float()
-        z = torch.randn_like(pts) * args.prior_std
-        pred = euler_sampler(model, z, cond,
-                             steps=args.sample_steps,
-                             guidance_scale=guidance_scale,
-                             use_ema=use_ema)
+        z = make_point_prior_like(pts, args)
+        pred = heun_sampler(model, z, cond,
+                            steps=args.sample_steps,
+                            guidance_scale=guidance_scale,
+                            use_ema=use_ema)
         cd = chamfer_l2(pred[..., :3], pts[..., :3])  # only xyz for CD
         cd_mean = float(cd.mean().detach().cpu())
 
@@ -201,17 +263,32 @@ def train_one_epoch(model, net, opt, scaler, train_loader,
         if cond is not None:
             cond = cond.to(args.device, non_blocking=True).float()
         B, N, _ = pts.shape
-        z = sample_noise_like(pts, std=args.prior_std)
-        t = torch.rand(B, device=args.device, dtype=pts.dtype)  # U[0,1]
+        z = make_point_prior_like(pts, args)
+
+        if getattr(args, "t_beta_a", 1.0) is None or abs(float(args.t_beta_a) - 1.0) < 1e-8:
+            t = torch.rand(B, device=args.device, dtype=pts.dtype)  # uniform
+        else:
+            a = float(args.t_beta_a)
+            assert a > 0.0
+            u = torch.rand(B, device=args.device, dtype=pts.dtype)
+            t = u.pow(1.0 / a)  # Beta(a,1)
+
         x_t = (1.0 - t)[:, None, None] * z + t[:, None, None] * pts
         target_v = (pts - z)
         cond_drop_mask = None
         if args.cfg_drop_p > 0.0 and args.cond_dim > 0 and cond is not None:
             drop = (torch.rand(B, device=args.device) < args.cfg_drop_p).to(pts.dtype)
             cond_drop_mask = drop[:, None]  # (B,1)
+
         with make_autocast(enabled=args.amp, use_bf16=args.use_bf16):
-            pred_v = model(x_t, t, cond, cond_drop_mask=cond_drop_mask)  # ← 条件在训练前向中使用 :contentReference[oaicite:7]{index=7}
-            loss = F.mse_loss(pred_v, target_v)
+            pred_v = model(x_t, t, cond, cond_drop_mask=cond_drop_mask)
+            if pred_v.shape[-1] == 6:
+                loss_pos = F.mse_loss(pred_v[..., :3], target_v[..., :3])
+                loss_col = F.mse_loss(pred_v[..., 3:], target_v[..., 3:])
+                loss = loss_pos + float(args.lambda_color) * loss_col
+            else:
+                loss = F.mse_loss(pred_v, target_v)
+
         scaler.scale(loss).backward()
         if args.grad_clip_norm is not None and args.grad_clip_norm > 0:
             scaler.unscale_(opt)
@@ -329,9 +406,40 @@ def _restore_rng_states(rng):
         return
     try:
         if "torch" in rng and rng["torch"] is not None:
-            torch.set_rng_state(rng["torch"])
+            st = rng["torch"]
+            # 必须是 CPU + uint8
+            if torch.is_tensor(st):
+                st = st.detach()
+                if st.is_cuda:
+                    st = st.cpu()
+                if st.dtype != torch.uint8:
+                    st = st.to(torch.uint8)
+            else:
+                # 兜底：如果历史 ckpt 把它存成了 list/bytes
+                st = torch.tensor(st, dtype=torch.uint8, device="cpu")
+            torch.set_rng_state(st)
+
         if "cuda_all" in rng and rng["cuda_all"] is not None and torch.cuda.is_available():
-            torch.cuda.set_rng_state_all(rng["cuda_all"])
+            cuda_states = rng["cuda_all"]
+            fixed = []
+            for s in cuda_states:
+                if torch.is_tensor(s):
+                    s = s.detach()
+                    if s.is_cuda:
+                        s = s.cpu()
+                    if s.dtype != torch.uint8:
+                        s = s.to(torch.uint8)
+                else:
+                    s = torch.tensor(s, dtype=torch.uint8, device="cpu")
+                fixed.append(s)
+
+            # （可选但很实用）如果恢复时可见 GPU 数量变化，避免 set_rng_state_all 直接报错
+            n_dev = torch.cuda.device_count()
+            if len(fixed) != n_dev:
+                fixed = fixed[:n_dev] if len(fixed) > n_dev else (fixed + [fixed[-1]] * (n_dev - len(fixed)))
+
+            torch.cuda.set_rng_state_all(fixed)
+
         if "numpy" in rng and rng["numpy"] is not None:
             np_state = rng["numpy"]
             if isinstance(np_state, tuple) and len(np_state) >= 2 and isinstance(np_state[1], list):
@@ -411,6 +519,8 @@ def main():
     # Flow / sampling / I/O
     parser.add_argument("--prior_std", type=float, default=1.0)
     parser.add_argument("--sample_steps", type=int, default=50)
+    parser.add_argument("--t_beta_a", type=float, default=1.0,
+                        help="Sample t ~ Beta(a, 1). a=1 -> uniform; a>1 biases t towards 1.")
     parser.add_argument("--save_every", type=int, default=10,
                         help="多少个 epoch 存一个编号 checkpoint（epoch_xxxx.pt）")
     parser.add_argument("--val_every", type=int, default=0,
@@ -418,6 +528,15 @@ def main():
     parser.add_argument("--vis_count", type=int, default=16)
     parser.add_argument("--save_uncond", action="store_true", default=True)
     parser.add_argument("--guidance_scale", type=float, default=0.0)
+    parser.add_argument("--lambda_color", type=float, default=0.05,
+                        help="Weight for RGB loss when point_dim=6 (xyzrgb).")
+    parser.add_argument("--color_prior", type=str, default="uniform",
+                        choices=["uniform", "zeros", "gauss"],
+                        help="RGB prior type when --use_rgb. Default: uniform in [0,1].")
+    parser.add_argument("--color_prior_std", type=float, default=1.0,
+                        help="RGB prior std when --color_prior=gauss.")
+    parser.add_argument("--point_prior_std", type=float, default=None,
+                        help="Alias of --prior_std (XYZ gaussian prior std). If set, overrides --prior_std.")
 
     # System / I/O
     parser.add_argument("--out_dir", type=str, default="./runs/fm_tdcr")
@@ -437,6 +556,8 @@ def main():
     args = parser.parse_args()
     # global point dimension
     args.point_dim = 6 if args.use_rgb else 3
+    if args.point_prior_std is not None:
+        args.prior_std = float(args.point_prior_std)
 
     # ddp init
     is_dist, rank, world_size, local_rank = init_distributed()
@@ -507,7 +628,7 @@ def main():
     if ckpt_path is not None:
         if rank == 0:
             print(f"[Resume] Loading checkpoint from {ckpt_path}")
-        ckpt = torch.load(ckpt_path, map_location=args.device)
+        ckpt = torch.load(ckpt_path, map_location="cpu")
 
         # 恢复模型
         if "model" in ckpt:
@@ -616,196 +737,5 @@ if __name__ == "__main__":
 
 
 '''
-
-export CUDA_VISIBLE_DEVICES=4,5
-torchrun --standalone --nproc_per_node=2 --master_port=29511 \
-
-python train_flowmatching.py \
-  --data_dir datasets/sim_2m \
-  --batch_size 8 --epochs 500 --save_every 20 \
-  --emb_dim 64 --width 256 --depth 4 \
-  --tr_max_sample_points 20000 --te_max_sample_points 20000 \
-  --cond_mode motors \
-  --pf_backbone mlp \
-  --use_cosine_lr \
-  --out_dir runs/sim2_mlp_12_2_2W
-
-python train_flowmatching.py \
-  --data_dir datasets/sim_3m \
-  --batch_size 8 --epochs 500 --save_every 20 \
-  --emb_dim 64 --width 256 --depth 4 \
-  --tr_max_sample_points 20000 --te_max_sample_points 20000 \
-  --cond_mode motors \
-  --pf_backbone mlp \
-  --use_cosine_lr \
-  --out_dir runs/sim3_mlp_12_2_2W
-
-python train_flowmatching.py \
-  --data_dir datasets/real_2m \
-  --batch_size 8 --epochs 500 --save_every 20 \
-  --emb_dim 64 --width 256 --depth 4 \
-  --tr_max_sample_points 20000 --te_max_sample_points 20000 \
-  --cond_mode motors \
-  --pf_backbone mlp \
-  --use_cosine_lr \
-  --out_dir runs/real2_mlp_12_2_2W
-
-python train_flowmatching.py \
-  --data_dir datasets/sim_5m \
-  --batch_size 8 --epochs 1000 --save_every 20 \
-  --emb_dim 64 --width 256 --depth 4 \
-  --tr_max_sample_points 20000 --te_max_sample_points 20000 \
-  --cond_mode motors \
-  --pf_backbone mlp \
-  --use_cosine_lr \
-  --out_dir runs/sim5_mlp_12_16_2W
-
-python train_flowmatching.py \
-  --data_dir datasets/sim_5m_with_base \
-  --batch_size 8 --epochs 1000 --save_every 20 \
-  --emb_dim 64 --width 256 --depth 4 \
-  --tr_max_sample_points 20000 --te_max_sample_points 20000 \
-  --cond_mode motors \
-  --pf_backbone mlp \
-  --use_cosine_lr \
-  --out_dir runs/sim5_with_base_mlp_12_18_2W
-
-python train_flowmatching.py \
-  --data_dir datasets/real_3m_with_base \
-  --batch_size 8 --epochs 500 --save_every 20 \
-  --emb_dim 64 --width 256 --depth 4 \
-  --tr_max_sample_points 20000 --te_max_sample_points 20000 \
-  --cond_mode motors \
-  --pf_backbone mlp \
-  --use_cosine_lr \
-  --out_dir runs/real3m_with_base_mlp_12_25_2W
-  
-
-
-export CUDA_VISIBLE_DEVICES=4,5
-torchrun --standalone --nproc_per_node=2 --master_port=29511 \
-python train_flowmatching.py \
-  --data_dir datasets/sim_2m \
-  --batch_size 16 --epochs 500 --save_every 20 \
-  --tr_max_sample_points 20000 --te_max_sample_points 20000 \
-  --cond_mode motors --lr 6e-4 --min_lr 2e-6 \
-  --pf_backbone hybrid \
-  --emb_dim 64 --width 256 --depth 4 --cfg_drop_p 0.0 \
-  --ctx_dim 16 \
-  --ctx_emb_dim 64 \
-  --ctx_stage_channels 80 112 112 \
-  --ctx_stage_blocks 2 2 2 \
-  --ctx_stage_res 24 16 8 \
-  --ctx_with_se --ctx_with_global --ctx_voxel_normalize \
-  --ctx_t_gate_tau 0.97 --ctx_t_gate_k 12 \
-  --use_cosine_lr \
-  --out_dir runs/sim2_hybrid_12_3
-
-python train_flowmatching.py \
-  --data_dir datasets/sim_3m \
-  --batch_size 16 --epochs 500 --save_every 20 \
-  --tr_max_sample_points 20000 --te_max_sample_points 20000 \
-  --cond_mode motors --lr 6e-4 --min_lr 2e-6 \
-  --pf_backbone hybrid \
-  --emb_dim 64 --width 256 --depth 4 --cfg_drop_p 0.0 \
-  --ctx_dim 16 \
-  --ctx_emb_dim 64 \
-  --ctx_stage_channels 80 112 112 \
-  --ctx_stage_blocks 2 2 2 \
-  --ctx_stage_res 24 16 8 \
-  --ctx_with_se --ctx_with_global --ctx_voxel_normalize \
-  --ctx_t_gate_tau 0.97 --ctx_t_gate_k 12 \
-  --use_cosine_lr \
-  --out_dir runs/sim3_hybrid_12_3
-
-python train_flowmatching.py \
-  --data_dir datasets/real_2m \
-  --batch_size 16 --epochs 500 --save_every 20 \
-  --tr_max_sample_points 20000 --te_max_sample_points 20000 \
-  --cond_mode motors --lr 6e-4 --min_lr 2e-6 \
-  --pf_backbone hybrid \
-  --emb_dim 64 --width 256 --depth 4 --cfg_drop_p 0.0 \
-  --ctx_dim 16 \
-  --ctx_emb_dim 64 \
-  --ctx_stage_channels 80 112 112 \
-  --ctx_stage_blocks 2 2 2 \
-  --ctx_stage_res 24 16 8 \
-  --ctx_with_se --ctx_with_global --ctx_voxel_normalize \
-  --ctx_t_gate_tau 0.97 --ctx_t_gate_k 12 \
-  --use_cosine_lr \
-  --out_dir runs/real2_hybrid_12_3
-
-
-python train_flowmatching.py \
-  --data_dir datasets/sim_5m \
-  --batch_size 16 --epochs 500 --save_every 20 \
-  --tr_max_sample_points 20000 --te_max_sample_points 20000 \
-  --cond_mode motors --lr 6e-4 --min_lr 2e-6 \
-  --pf_backbone hybrid \
-  --emb_dim 64 --width 256 --depth 4 --cfg_drop_p 0.0 \
-  --ctx_dim 16 \
-  --ctx_emb_dim 64 \
-  --ctx_stage_channels 80 112 112 \
-  --ctx_stage_blocks 2 2 2 \
-  --ctx_stage_res 24 16 8 \
-  --ctx_with_se --ctx_with_global --ctx_voxel_normalize \
-  --ctx_t_gate_tau 0.97 --ctx_t_gate_k 12 \
-  --use_cosine_lr \
-  --out_dir runs/sim5_hybrid_12_17
-
-
-python train_flowmatching.py \
-  --data_dir datasets/sim_5m_with_base \
-  --batch_size 16 --epochs 500 --save_every 20 \
-  --tr_max_sample_points 20000 --te_max_sample_points 20000 \
-  --cond_mode motors --lr 6e-4 --min_lr 2e-6 \
-  --pf_backbone hybrid \
-  --emb_dim 64 --width 256 --depth 4 --cfg_drop_p 0.0 \
-  --ctx_dim 16 \
-  --ctx_emb_dim 64 \
-  --ctx_stage_channels 80 112 112 \
-  --ctx_stage_blocks 2 2 2 \
-  --ctx_stage_res 24 16 8 \
-  --ctx_with_se --ctx_with_global --ctx_voxel_normalize \
-  --ctx_t_gate_tau 0.97 --ctx_t_gate_k 12 \
-  --use_cosine_lr \
-  --out_dir runs/sim5_with_base_hybrid_12_19
-
-
-python train_flowmatching.py \
-  --data_dir datasets/real_3m_with_base \
-  --batch_size 16 --epochs 500 --save_every 20 \
-  --tr_max_sample_points 20000 --te_max_sample_points 20000 \
-  --cond_mode motors --lr 6e-4 --min_lr 2e-6 \
-  --pf_backbone hybrid \
-  --emb_dim 64 --width 256 --depth 4 --cfg_drop_p 0.0 \
-  --ctx_dim 16 \
-  --ctx_emb_dim 64 \
-  --ctx_stage_channels 80 112 112 \
-  --ctx_stage_blocks 2 2 2 \
-  --ctx_stage_res 24 16 8 \
-  --ctx_with_se --ctx_with_global --ctx_voxel_normalize \
-  --ctx_t_gate_tau 0.97 --ctx_t_gate_k 12 \
-  --use_cosine_lr \
-  --out_dir runs/real3m_with_base_hybrid_12_25
-
-
-下面是测试的hybrid的参数：
-python train_flowmatching.py \
-  --data_dir datasets/sim_3m \
-  --batch_size 8 --epochs 500 --save_every 20 \
-  --tr_max_sample_points 20000 --te_max_sample_points 20000 \
-  --cond_mode motors \
-  --pf_backbone hybrid \
-  --lr 3e-4 --min_lr 1e-6 \
-  --emb_dim 64 --width 256 --depth 4 --cfg_drop_p 0.0 \
-  --ctx_dim 16 --ctx_emb_dim 64 \
-  --ctx_stage_channels 80 112 112 \
-  --ctx_stage_blocks 2 2 2 \
-  --ctx_stage_res 24 16 8 \
-  --ctx_with_se --ctx_with_global --ctx_voxel_normalize \
-  --ctx_t_gate_tau 0.70 --ctx_t_gate_k 8 \
-  --use_cosine_lr \
-  --out_dir runs/sim3m_hybrid_tau70_k8_bs8_12_26
 
 '''
