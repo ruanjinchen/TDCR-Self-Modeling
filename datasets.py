@@ -213,9 +213,13 @@ class TDCRH5PointClouds(Dataset):
 
         rgb = None
         if self.use_rgb:
-            rgb = f[self.rgb_key][ri].astype(np.float32)  # (N,3), values in [0,255]
-            # normalize to [-1, 1]
-            rgb = rgb / 127.5 - 1.0
+            rgb = f[self.rgb_key][ri].astype(np.float32)  # (N,3), usually in [0,255]
+            # normalize to [0, 1]
+            mx = float(np.max(rgb)) if rgb.size > 0 else 1.0
+            if mx > 1.0:
+                rgb = rgb / 255.0
+            rgb = np.clip(rgb, 0.0, 1.0)
+
 
         tr_idx = self._sample_idx(N, self.tr_n)
         te_idx = self._sample_idx(N, self.te_n)
