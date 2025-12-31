@@ -1,0 +1,35 @@
+export MUJOCO_GL=egl
+export EGL_LOG_LEVEL=fatal
+export LIBEGL_DEBUG=fatal
+
+阶段1:采集数据
+python tdcr_pipeline.py collect \
+  --xml tdcr5_with_base.xml \
+  --nsample 5000 \
+  --out_pcd_dir "5m_with_base/pointcloud" \
+  --out_json_dir "5m_with_base/motor" \
+  --out_rgb_dir 5m_with_base/rgb \
+  --sampling continuous \
+  --seed 42 \
+  --start_index 1 \
+  --unique_tol 1e-6 \
+  --backend auto \
+  --workers 48 \
+  --zero_vel_each_ctrl \
+  --relax_max_steps 10000
+
+阶段2:制作 H5（新增 motor_dir）
+python tdcr_pipeline.py make-h5 \
+  --pc_dir "5m_with_base/pointcloud" \
+  --motor_dir "5m_with_base/motor" \
+  --out_root 5m_with_base/ \
+  --npoints 20000 --voxel_size 0.002 \
+  --workers 32 --dtype float32 \
+  --val_frac 0.1 --test_frac 0.1 --save_rgb
+
+阶段3:补写归一化 原点不变 只缩放不平移
+python tdcr_pipeline.py add-norm \
+  --root 5m_with_base/ --mode global --scope all \
+  --anchor origin \
+  --dtype float32 --overwrite --dump_global \
+  --export_ply 6 --export_dir norm_samples
