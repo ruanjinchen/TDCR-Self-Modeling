@@ -73,12 +73,13 @@ def save_point_cloud_ply(xyz: torch.Tensor, path: str):
                 f.write(f"{p[0]:.6f} {p[1]:.6f} {p[2]:.6f}\n")
         return
 
-    # D == 6: xyzrgb, rgb is assumed in [-1, 1]
+    # D == 6: xyzrgb, rgb is assumed in [0, 1]
     xyz_part = arr[:, :3]
     rgb_part = arr[:, 3:6]
 
-    # map [-1,1] -> [0,255]
-    rgb255 = np.clip((rgb_part + 1.0) * 127.5, 0.0, 255.0).astype(np.uint8)
+    # map [0,1] -> [0,255]
+    rgb255 = np.clip(rgb_part * 255.0, 0.0, 255.0).astype(np.uint8)
+
 
     header = [
         "ply",
