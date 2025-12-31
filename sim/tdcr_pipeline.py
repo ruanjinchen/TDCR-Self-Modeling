@@ -18,10 +18,20 @@ def build_arg_parser():
     ac.add_argument("--nsample", type=int, default=100)
     ac.add_argument("--res_w", type=int, default=1280)
     ac.add_argument("--res_h", type=int, default=720)
-    ac.add_argument("--depth_max", type=float, default=0.6)
+    ac.add_argument("--depth_max", type=float, default=1.0)
     ac.add_argument("--stride", type=int, default=1)
     ac.add_argument("--out_pcd_dir", type=Path, default=Path("./pointcloud"))
     ac.add_argument("--out_json_dir", type=Path, default=Path("./motor"))
+    # Optional: export RGB images from MuJoCo cameras
+    ac.add_argument("--out_rgb_dir", type=Path, default=None,
+                    help="可选：导出RGB图像目录（会按相机名建子目录）；不填则不导出")
+    ac.add_argument("--rgb_format", choices=["png", "jpg"], default="png",
+                    help="RGB保存格式：png 或 jpg")
+    ac.add_argument("--rgb_only", action="store_true",
+                    help="只导出RGB（仍导出 motor JSON），不导出点云")
+    ac.add_argument("--rgb_cams", nargs="*", default=None,
+                    help="可选：指定要导出的相机列表（相机 name 或 id）。默认全部相机。"
+                         "例：--rgb_cams camera1 camera2 或 --rgb_cams 0 1 2 3")
     ac.add_argument("--seed", type=int, default=42)
     ac.add_argument("--start_index", type=int, default=1)
     ac.add_argument("--sampling", choices=["discrete","continuous"], default="continuous")
@@ -67,6 +77,7 @@ def build_arg_parser():
     ah.add_argument("--preview_out", type=Path, default=Path("./samples"))
     ah.add_argument("--preview_only", action="store_true")
     ah.add_argument("--preview_coords", choices=["world","normalized","both"], default="world")
+    ah.add_argument("--save_rgb", action="store_true",help="可选：把点云 RGB 写入 H5（uint8, 0-255），数据集名为 rgb")
 
     # add-norm
     an = sub.add_parser("add-norm", help="阶段3:给 H5 补写 data_norm/center/scale")
@@ -164,6 +175,9 @@ def build_arg_parser():
     aa.add_argument("--m_out_npz", type=Path, default=Path("motors_all.npz"))
     aa.add_argument("--m_format", choices=["array","dict"], default="array")
     aa.add_argument("--m_zfill", type=int, default=6)
+
+    aa.add_argument("--h5_save_rgb", action="store_true", help="同 --save_rgb：把点云 RGB 写入 H5（uint8, 0-255），数据集名为 rgb")
+
     return ap
 
 def main():
@@ -174,7 +188,10 @@ def main():
         cfg = CollectCfg(
             xml=args.xml, nsample=args.nsample, res_w=args.res_w, res_h=args.res_h,
             depth_max=args.depth_max, stride=args.stride, out_pcd_dir=args.out_pcd_dir,
-            out_json_dir=args.out_json_dir, seed=args.seed, start_index=args.start_index,
+            out_json_dir=args.out_json_dir, seed=args.seed,
+            out_rgb_dir=args.out_rgb_dir, rgb_format=args.rgb_format,
+            rgb_only=args.rgb_only, rgb_cams=args.rgb_cams,
+            start_index=args.start_index,
             sampling=args.sampling, levels_per_motor=args.levels_per_motor, unique_tol=args.unique_tol,
             min_gap=args.min_gap, sim_steps=args.sim_steps, relax_max_steps=args.relax_max_steps,
             stable_vel_eps=args.stable_vel_eps, stable_qpos_eps=args.stable_qpos_eps,
@@ -188,7 +205,7 @@ def main():
         cfg = H5Cfg(
             pc_dir=args.pc_dir, out_root=args.out_root, npoints=args.npoints, voxel_size=args.voxel_size,
             base_z=args.base_z, repeat=args.repeat, motor_dir=args.motor_dir,
-            allow_missing_motor=args.allow_missing_motor, val_frac=args.val_frac, test_frac=args.test_frac,
+            allow_missing_motor=args.allow_missing_motor, save_rgb=args.save_rgb, val_frac=args.val_frac, test_frac=args.test_frac,
             shuffle_seed=args.shuffle_seed, workers=args.workers, shard_size=args.shard_size, dtype=args.dtype,
             normalize=args.normalize, save_normalized=args.save_normalized, aug_rotate_z=args.aug_rotate_z,
             aug_jitter=args.aug_jitter, jitter_sigma=args.jitter_sigma, jitter_clip=args.jitter_clip,
@@ -228,7 +245,7 @@ def main():
         h = H5Cfg(
             pc_dir=c.out_pcd_dir, out_root=args.h5_out_root, npoints=args.h5_npoints, voxel_size=args.h5_voxel_size,
             base_z=args.h5_base_z, repeat=args.h5_repeat, motor_dir=args.h5_motor_dir,
-            allow_missing_motor=args.h5_allow_missing_motor, val_frac=args.h5_val_frac, test_frac=args.h5_test_frac,
+            allow_missing_motor=args.h5_allow_missing_motor, save_rgb=args.h5_save_rgb, val_frac=args.h5_val_frac, test_frac=args.h5_test_frac,
             shuffle_seed=args.h5_shuffle_seed, workers=args.h5_workers, shard_size=args.h5_shard_size, dtype=args.h5_dtype,
             normalize=args.h5_normalize, save_normalized=args.h5_save_normalized, aug_rotate_z=args.h5_aug_rotate_z,
             aug_jitter=args.h5_aug_jitter, jitter_sigma=args.h5_jitter_sigma, jitter_clip=args.h5_jitter_clip,
@@ -263,40 +280,79 @@ if __name__ == "__main__":
 '''
 阶段1:采集数据
 python tdcr_pipeline.py collect \
-  --xml tdcr.xml \
-  --nsample 10000 \
-  --out_pcd_dir "3m/pointcloud" \
-  --out_json_dir "3m/motor" \
+  --xml tdcr2_no_base.xml \
+  --nsample 5000 \
+  --out_pcd_dir "2m_no_base/pointcloud" \
+  --out_json_dir "2m_no_base/motor" \
+  --out_rgb_dir 2m_no_base/rgb \
   --sampling continuous \
   --seed 42 \
   --start_index 1 \
   --unique_tol 1e-6 \
-  --backend osmesa \
-  --workers 16 \
+  --backend auto \
+  --workers 8 \
   --zero_vel_each_ctrl \
   --relax_max_steps 10000
-osmesa
+
+python tdcr_pipeline.py collect \
+  --xml tdcr5_with_base.xml \
+  --nsample 5000 \
+  --out_pcd_dir "5m_with_base/pointcloud" \
+  --out_json_dir "5m_with_base/motor" \
+  --out_rgb_dir 5m_with_base/rgb \
+  --sampling continuous \
+  --seed 42 \
+  --start_index 1 \
+  --unique_tol 1e-6 \
+  --backend auto \
+  --workers 48 \
+  --zero_vel_each_ctrl \
+  --relax_max_steps 10000
+
+python tdcr_pipeline.py collect \
+  --xml tdcr5_no_base.xml \
+  --nsample 5000 \
+  --out_pcd_dir "5m_no_base/pointcloud" \
+  --out_json_dir "5m_no_base/motor" \
+  --out_rgb_dir 5m_no_base/rgb \
+  --sampling continuous \
+  --seed 42 \
+  --start_index 1 \
+  --unique_tol 1e-6 \
+  --backend auto \
+  --workers 48 \
+  --zero_vel_each_ctrl \
+  --relax_max_steps 10000
+  
+
 阶段2:制作 H5（新增 motor_dir）
 python tdcr_pipeline.py make-h5 \
-  --pc_dir "../3m/pointcloud" \
-  --motor_dir "../3m/motor" \
-  --out_root ../ \
-  --npoints 4096 --voxel_size 0.003 \
+  --pc_dir "2m_no_base/pointcloud" \
+  --motor_dir "2m_no_base/motor" \
+  --out_root 2m_no_base/ \
+  --npoints 20000 --voxel_size 0.002 \
   --workers 32 --dtype float32 \
-  --val_frac 0.05 --test_frac 0.05
+  --val_frac 0.1 --test_frac 0.1 --save_rgb
 
-阶段3:补写归一化
+阶段3:补写归一化 原点不变 只缩放不平移
 python tdcr_pipeline.py add-norm \
-  --root ../3m --mode global --scope all \
-  --anchor centroid \
-  --dtype float32 --overwrite --dump_global
-
-
-原点不变（只缩放不平移
-python tdcr_pipeline.py add-norm \
-  --root ../ --mode global --scope all \
+  --root 2m_no_base/ --mode global --scope all \
   --anchor origin \
   --dtype float32 --overwrite --dump_global \
-  --export_ply 6 --export_dir ./norm_samples
+  --export_ply 6 --export_dir norm_samples
 
+python tdcr_pipeline.py collect \
+  --xml tdcr2.xml \
+  --nsample 5000 \
+  --out_pcd_dir "2m_no_base/pointcloud" \
+  --out_json_dir "2m_no_base/motor" \
+  --sampling continuous \
+  --seed 42 \
+  --start_index 1 \
+  --unique_tol 1e-6 \
+  --backend auto \
+  --workers 8 \
+  --zero_vel_each_ctrl \
+  --relax_max_steps 10000 \
+  --out_rgb_dir 2m_no_base/rgb --rgb_only
 '''

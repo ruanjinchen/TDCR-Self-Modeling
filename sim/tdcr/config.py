@@ -14,6 +14,13 @@ class CollectCfg:
     stride: int = 1
     out_pcd_dir: Path = Path("./pointcloud")
     out_json_dir: Path = Path("./motor")
+    # Optional: export RGB images rendered from MuJoCo cameras.
+    # - If out_rgb_dir is None: do not save RGB.
+    # - If rgb_only is True: do not export pointcloud (still writes motor json).
+    out_rgb_dir: Path | None = None
+    rgb_format: str = "png"  # {"png","jpg"}
+    rgb_only: bool = False
+    rgb_cams: list[str] | None = None  # camera names or ids; None=all cameras
     seed: int = 42
     start_index: int = 1
     # sampling
@@ -47,6 +54,9 @@ class H5Cfg:
 
     motor_dir: Path|None = None
     allow_missing_motor: bool = False
+
+    # Optional: also store per-point RGB into H5 as uint8 in [0,255]
+    save_rgb: bool = False
 
     val_frac: float = 0.1
     test_frac: float = 0.1

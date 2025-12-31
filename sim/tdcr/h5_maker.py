@@ -15,39 +15,73 @@ try:
 except Exception:
     h5py = None
 
-def _load_pc(path: Path) -> np.ndarray:
+def _to_uint8_rgb(rgb_like: np.ndarray) -> np.ndarray:
+    """Convert RGB-like array to uint8 in [0,255].
+    - 支持 open3d 常见的 float [0,1]
+    - 也支持已经是 [0,255] 的 float/int
+    """
+    C = np.asarray(rgb_like)
+    if C.size == 0:
+        return np.zeros((0, 3), dtype=np.uint8)
+    if C.ndim != 2 or C.shape[1] != 3:
+        raise ValueError(f"RGB array shape must be (N,3), got {C.shape}")
+
+    Cf = C.astype(np.float32, copy=False)
+    mx = float(np.nanmax(Cf))
+    if mx <= 1.0 + 1e-6:      # 认为是 [0,1]
+        Cf = Cf * 255.0
+    return np.clip(np.round(Cf), 0.0, 255.0).astype(np.uint8)
+
+
+def _load_pc_xyz_rgb(path: Path) -> tuple[np.ndarray, np.ndarray | None]:
+    """Load point cloud xyz (float32) and optional rgb (uint8 0-255)."""
     ext = path.suffix.lower()
     if ext == ".npy":
         P = np.load(str(path))
-        P = P.astype(np.float32)
-        if P.ndim == 2 and P.shape[1] >= 3:
-            return P[:, :3]
-        raise ValueError(f"{path} shape {P.shape} not (N,3/>)")
+        if P.ndim != 2 or P.shape[1] < 3:
+            raise ValueError(f"{path} shape {P.shape} not (N,3/>)")
+        xyz = P[:, :3].astype(np.float32, copy=False)
+        rgb = None
+        # 兼容 (N,6): xyzrgb
+        if P.shape[1] >= 6:
+            rgb = _to_uint8_rgb(P[:, 3:6])
+        return xyz, rgb
+
     if o3d is None:
         raise RuntimeError("open3d not installed; needed for .ply/.pcd")
     pcd = o3d.io.read_point_cloud(str(path))
-    P = np.asarray(pcd.points, dtype=np.float32)
-    return P
+    xyz = np.asarray(pcd.points, dtype=np.float32)
+    rgb = None
+    if hasattr(pcd, "has_colors") and pcd.has_colors():
+        rgb = _to_uint8_rgb(np.asarray(pcd.colors))
+    return xyz, rgb
+
 
 def _save_ply(xyz: np.ndarray, path: Path):
     save_ply_ascii(xyz, path)
 
-def _crop_base(P: np.ndarray, base_z: float|None):
-    if base_z is None: return P
-    return P[P[:,2] > base_z]
+def _crop_base(P: np.ndarray, rgb: np.ndarray|None, base_z: float|None):
+    if base_z is None:
+        return P, rgb
+    m = (P[:, 2] > base_z)
+    return P[m], (None if rgb is None else rgb[m])
 
-def _voxel_downsample(P: np.ndarray, voxel_size: float) -> np.ndarray:
-    if len(P) == 0 or voxel_size is None or voxel_size <= 0: return P
+def _voxel_downsample(P: np.ndarray, voxel_size: float, rgb: np.ndarray|None = None):
+    if len(P) == 0 or voxel_size is None or voxel_size <= 0:
+        return P, rgb
     vs = float(voxel_size)
     K = np.floor(P / vs).astype(np.int64)
     _, idx = np.unique(K, axis=0, return_index=True)
-    return P[np.sort(idx)]
+    idx = np.sort(idx)
+    return P[idx], (None if rgb is None else rgb[idx])
 
-def _rand_downsample(P: np.ndarray, npoints: int, seed: int):
-    if len(P) <= npoints: return P
+def _rand_downsample(P: np.ndarray, rgb: np.ndarray|None, npoints: int, seed: int):
+    if len(P) <= npoints:
+        return P, rgb
     rng = np.random.RandomState(seed)
     idx = rng.choice(len(P), size=npoints, replace=False)
-    return P[idx]
+    return P[idx], (None if rgb is None else rgb[idx])
+
 
 def _normalize_unit_sphere(P: np.ndarray):
     if len(P) == 0:
@@ -102,21 +136,34 @@ def _load_motor_json(motor_dir: Path|None, stem: str) -> np.ndarray|None:
 def _process_one_h5(args):
     path, cfg, seed_offset = args
     rng = np.random.RandomState(seed_offset)
-    P = _load_pc(path)
+
+    need_rgb = bool(cfg.get("save_rgb", False))
+    P, rgb = _load_pc_xyz_rgb(path)
+
+    # 如果用户开了 --save_rgb，但文件里没有颜色：直接报错更安全
+    if need_rgb and rgb is None:
+        raise RuntimeError(f"{path}: no RGB colors found (cannot --save_rgb)")
+
     if cfg['base_z'] is not None:
-        P = _crop_base(P, cfg['base_z'])
-    P = _voxel_downsample(P, cfg['voxel_size'])
+        P, rgb = _crop_base(P, rgb, cfg['base_z'])
+    P, rgb = _voxel_downsample(P, cfg['voxel_size'], rgb=rgb)
 
     N = cfg['npoints']
     if len(P) == 0:
         P = np.zeros((N, 3), dtype=np.float32)
+        if need_rgb:
+            rgb = np.zeros((N, 3), dtype=np.uint8)
     elif len(P) < N:
         pad = rng.choice(len(P), size=N-len(P), replace=True)
         P = np.concatenate([P, P[pad]], 0)
+        if need_rgb:
+            rgb = np.concatenate([rgb, rgb[pad]], 0)
     elif len(P) > N:
-        P = _rand_downsample(P, N, seed_offset)
+        P, rgb = _rand_downsample(P, rgb, N, seed_offset)
+
     P_world = P.astype(np.float32)
 
+    # 归一化 / 增强（只改 xyz，不动 rgb）
     P_norm = None; center = np.zeros(3, np.float32); scale = np.float32(1.0)
     if cfg['need_norm']:
         P_norm, center, scale = _normalize_unit_sphere(P_world.copy())
@@ -137,11 +184,12 @@ def _process_one_h5(args):
                 raise FileNotFoundError(
                     f"Missing motor JSON for {path.stem} under {cfg['motor_dir']}."
                 )
+    return dict(world=P_world, rgb=(rgb if need_rgb else None),
+                norm=P_norm, center=center, scale=scale, motor=motor)
 
-    return dict(world=P_world, norm=P_norm, center=center, scale=scale, motor=motor)
 
 def _write_h5_shards(out_dir: Path, split_name: str, samples, shard_size: int,
-                     save_norm: bool, dtype=np.float32, save_motors: bool=False):
+                     save_norm: bool, dtype=np.float32, save_motors: bool=False, save_rgb: bool=False):
     split_dir = out_dir / split_name
     ensure_dir(split_dir)
     tot = len(samples)
@@ -155,7 +203,8 @@ def _write_h5_shards(out_dir: Path, split_name: str, samples, shard_size: int,
         idx += len(this)
         fn = split_dir / f"shard-{si:05d}.h5"
         with h5py.File(str(fn), "w") as f:
-            d = f.create_dataset("data", shape=(len(this), this[0]['world'].shape[0], 3), dtype=dtype)
+            N = this[0]["world"].shape[0]
+            d = f.create_dataset("data", shape=(len(this), N, 3), dtype=dtype)
             for i, item in enumerate(this):
                 d[i] = item['world'].astype(dtype)
             if save_norm:
@@ -192,6 +241,14 @@ def _write_h5_shards(out_dir: Path, split_name: str, samples, shard_size: int,
                             mv = np.asarray(mv, dtype=np.float32).reshape(-1)
                             assert len(mv) == Dmot, f"样本电机维度不一致：期望 {Dmot}，实际 {len(mv)}"
                             mds[i] = mv
+            if save_rgb:
+                cds = f.create_dataset("rgb", shape=(len(this), N, 3), dtype=np.uint8)
+                for i, item in enumerate(this):
+                    rv = item.get('rgb', None)
+                    if rv is None:
+                        cds[i] = np.zeros((N, 3), dtype=np.uint8)
+                    else:
+                        cds[i] = np.asarray(rv, dtype=np.uint8)
     return nshards
 
 def h5_stage(cfg: H5Cfg):
@@ -241,6 +298,7 @@ def h5_stage(cfg: H5Cfg):
                     "jitter_clip": cfg.jitter_clip,
                     "motor_dir": str(cfg.motor_dir) if cfg.motor_dir is not None else None,
                     "allow_missing_motor": bool(cfg.allow_missing_motor),
+                    "save_rgb": bool(cfg.save_rgb),
                 }, rep*1_000_000 + i))
         return tasks
 
@@ -281,11 +339,14 @@ def h5_stage(cfg: H5Cfg):
     test_list  = run_pool(build_tasks(test_files))
 
     nsh_train = _write_h5_shards(out_dir, "train", train_list, cfg.shard_size,
-                                 save_norm=cfg.save_normalized, dtype=dtype_np, save_motors=has_motors)
+                                 save_norm=cfg.save_normalized, dtype=dtype_np, save_motors=has_motors,
+                                 save_rgb=bool(cfg.save_rgb))
     nsh_val   = _write_h5_shards(out_dir, "val",   val_list,   cfg.shard_size,
-                                 save_norm=cfg.save_normalized, dtype=dtype_np, save_motors=has_motors)
+                                 save_norm=cfg.save_normalized, dtype=dtype_np, save_motors=has_motors,
+                                 save_rgb=bool(cfg.save_rgb))
     nsh_test  = _write_h5_shards(out_dir, "test",  test_list,  cfg.shard_size,
-                                 save_norm=cfg.save_normalized, dtype=dtype_np, save_motors=has_motors)
+                                 save_norm=cfg.save_normalized, dtype=dtype_np, save_motors=has_motors,
+                                 save_rgb=bool(cfg.save_rgb))
 
     meta = {
         "total_raw": len(files),
@@ -308,6 +369,7 @@ def h5_stage(cfg: H5Cfg):
         "save_normalized": bool(cfg.save_normalized),
         "aug_rotate_z": bool(cfg.aug_rotate_z),
         "aug_jitter": bool(cfg.aug_jitter),
+        "save_rgb": bool(cfg.save_rgb),
     }
     json.dump(meta, open(out_dir/"meta.json","w"), indent=2)
     print_color("✅ [H5] done. meta written to meta.json")

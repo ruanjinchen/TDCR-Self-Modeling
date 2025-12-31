@@ -103,6 +103,116 @@ def _save_global_cs(root: Path, cs_map: dict, tag: str):
         _json.dump({k: {"center": cs_map[k][0].tolist(), "scale": float(cs_map[k][1])} for k in keys}, f, indent=2)
     print_color(f"[global] saved center/scale to {out_npz} (and .json)")
 
+def _compute_global_motor_minmax(shards, scope: str = "all"):
+    """扫描所有 shard, 统计 motors 数据集逐维度的全局 min/max.
+    返回: dict[key] = (min_vec, max_vec), 其中 key 为 'all' 或 split 名.
+    如果完全没有 motors 数据集, 返回 {}.
+    """
+    from tqdm import tqdm as _tqdm
+    mins = {}
+    maxs = {}
+    has_any = False
+    for sp, fp in _tqdm(shards, desc="[motors] global min/max", ncols=120):
+        key = sp if scope == "split" else "ALL"
+        import h5py as _h5
+        with _h5.File(fp, "r") as f:
+            if "motors" not in f:
+                continue
+            M = f["motors"][:].astype(np.float32)
+        if M.ndim != 2 or M.size == 0:
+            continue
+        has_any = True
+        B, D = M.shape
+        if key not in mins:
+            mins[key] = np.full(D, np.inf, dtype=np.float32)
+            maxs[key] = np.full(D, -np.inf, dtype=np.float32)
+        for d in range(D):
+            col = M[:, d]
+            # 支持 NaN（缺失 motor 会写 NaN）
+            valid = np.isfinite(col) & (~np.isnan(col))
+            if not valid.any():
+                continue
+            cmin = float(col[valid].min())
+            cmax = float(col[valid].max())
+            if cmin < mins[key][d]:
+                mins[key][d] = cmin
+            if cmax > maxs[key][d]:
+                maxs[key][d] = cmax
+    if not has_any:
+        return {}
+    out = {}
+    for k in mins:
+        mn = mins[k].astype(np.float32)
+        mx = maxs[k].astype(np.float32)
+        # 某个维度完全没有效数据 -> 给个默认区间 [0,1]
+        bad = ~np.isfinite(mn) | ~np.isfinite(mx)
+        if np.any(bad):
+            mn[bad] = 0.0
+            mx[bad] = 1.0
+        key_name = k if k != "ALL" else "all"
+        out[key_name] = (mn, mx)
+    return out
+
+
+def _save_global_motor_stats(root: Path, mm_map: dict, tag: str):
+    """将 motors 的全局 min/max/scale 保存到 root 下的 npz/json."""
+    import json as _json
+    if not mm_map:
+        return
+    out_npz = root / f"global_motors_{tag}.npz"
+    keys = sorted(mm_map.keys())
+    mins = np.stack([mm_map[k][0] for k in keys], axis=0).astype(np.float32)
+    maxs = np.stack([mm_map[k][1] for k in keys], axis=0).astype(np.float32)
+    scales = (maxs - mins).astype(np.float32)
+    scales[scales < 1e-6] = 1.0  # 防止除 0
+    np.savez(out_npz, keys=np.array(keys), mins=mins, maxs=maxs, scales=scales)
+    out_json = {
+        k: {
+            "min": mins[i].tolist(),
+            "max": maxs[i].tolist(),
+            "scale": scales[i].tolist(),
+        }
+        for i, k in enumerate(keys)
+    }
+    with open(root / f"global_motors_{tag}.json", "w") as f:
+        _json.dump(out_json, f, indent=2)
+    print_color(f"[motors] saved min/max/scale to {out_npz} (and .json)")
+
+
+def _write_global_motor_norm(fp: Path, motor_mm_map: dict, scope_key: str, overwrite: bool = False):
+    """根据全局 motors min/max, 在 shard 内写入 motors_norm 数据集."""
+    from tqdm import tqdm as _tqdm
+    import h5py as _h5
+    if scope_key not in motor_mm_map:
+        return
+    mmin, mmax = motor_mm_map[scope_key]
+    mmin = mmin.astype(np.float32).reshape(-1)
+    mmax = mmax.astype(np.float32).reshape(-1)
+    scale = (mmax - mmin).astype(np.float32)
+    scale[scale < 1e-6] = 1.0  # 保底
+
+    with _h5.File(fp, "r+") as f:
+        if "motors" not in f:
+            return
+        M = f["motors"]
+        B, D = M.shape
+        if len(mmin) != D:
+            raise RuntimeError(f"{fp}: motors dim mismatch: stats={len(mmin)} file={D}")
+        if "motors_norm" in f:
+            if overwrite:
+                del f["motors_norm"]
+            else:
+                raise RuntimeError("motors_norm already exists; use --overwrite to replace.")
+        Mn = f.create_dataset("motors_norm", shape=(B, D), dtype=np.float32)
+
+        for i in _tqdm(range(B), desc=f"[motors-norm:{scope_key}] {Path(fp).name}", ncols=120):
+            mv = M[i].astype(np.float32)
+            out = np.full_like(mv, np.nan, dtype=np.float32)
+            valid = np.isfinite(mv) & (~np.isnan(mv))
+            if np.any(valid):
+                out[valid] = (mv[valid] - mmin[valid]) / scale[valid]
+            Mn[i] = out
+
 def _ensure_datasets(f, count: int, npoints: int, dtype_norm, overwrite=False):
     if "data_norm" in f:
         if overwrite: del f["data_norm"]
@@ -206,6 +316,14 @@ def norm_stage(cfg: NormCfg):
         raise SystemExit("No shards found under given splits.")
     dtype_norm = np.float32 if cfg.dtype == "float32" else np.float16
 
+    # === 额外: 对 H5 中的 motors 做全局归一化的统计 ===
+    motor_mm_map = _compute_global_motor_minmax(shards, scope=cfg.scope)
+    if motor_mm_map:
+        print_color("[motors] will normalize motors to [0,1] using global per-dim min/max.")
+        if cfg.dump_global:
+            tag_m = f"scope-{cfg.scope}"
+            _save_global_motor_stats(work_root, motor_mm_map, tag_m)
+
     if cfg.mode == "per-sample":
         for sp, fp in shards:
             _write_per_sample(fp, dtype_norm, anchor=cfg.anchor, overwrite=cfg.overwrite)
@@ -220,6 +338,12 @@ def norm_stage(cfg: NormCfg):
         for sp, fp in shards:
             key = sp if cfg.scope == "split" else "all"
             _write_global(fp, dtype_norm, cs_map, key, anchor=cfg.anchor, overwrite=cfg.overwrite)
+    # 额外: 写入 motors_norm (如果存在 motors 数据集)
+    if motor_mm_map:
+        for sp, fp in shards:
+            key_m = sp if cfg.scope == "split" else "all"
+            _write_global_motor_norm(fp, motor_mm_map, key_m, overwrite=cfg.overwrite)
+
     if cfg.export_ply and cfg.export_ply > 0:
         _export_random_ply(work_root, splits, cfg.export_ply, cfg.export_dir, seed=cfg.export_seed)
     print_color("✅ [normalize] done.")
