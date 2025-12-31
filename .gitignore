@@ -33,3 +33,10 @@ datasets/
 runs/
 demo_out/
 runs_final/
+sim/2m_no_base
+sim/3m_no_base
+sim/5m_no_base
+sim/2m_with_base
+sim/3m_with_base
+sim/5m_with_base
+sim/3dgs
