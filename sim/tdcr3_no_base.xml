@@ -20,14 +20,19 @@
   </default>
 
   <worldbody>
-    <camera name="camera1" pos="0.000 -0.500 0.400" quat="0.77334 0.63399 -0.00000 -0.00000" fovy="45"/>
-    <camera name="camera2" pos="0.000 0.500 0.400" quat="-0.00000 0.00000 0.63399 0.77334" fovy="45"/>
-    <camera name="camera3" pos="0.500 0.000 0.400" quat="0.54684 0.44830 0.44830 0.54684" fovy="45"/>
-    <camera name="camera4" pos="-0.500 0.000 0.400" quat="-0.54684 -0.44830 0.44830 0.54684" fovy="45"/>
+    <camera name="camera1" pos="0.000 -0.600 0.320" quat="0.77334 0.63399 -0.00000 -0.00000" fovy="45"/>
+    <camera name="camera2" pos="0.000 0.600 0.320" quat="-0.00000 0.00000 0.63399 0.77334" fovy="45"/>
+    <camera name="camera3" pos="0.600 0.000 0.320" quat="0.54684 0.44830 0.44830 0.54684" fovy="45"/>
+    <camera name="camera4" pos="-0.600 0.000 0.320" quat="-0.54684 -0.44830 0.44830 0.54684" fovy="45"/>
+    <camera name="camera5" pos="0.424 0.424 0.320" quat="0.29595 0.24262 0.58573 0.71448" fovy="45"/>
+    <camera name="camera6" pos="-0.424 0.424 0.320" quat="0.29595 0.24262 -0.58573 -0.71448" fovy="45"/>
+    <camera name="camera7" pos="-0.424 -0.424 0.320" quat="0.71448 0.58573 -0.24262 -0.29595" fovy="45"/>
+    <camera name="camera8" pos="0.424 -0.424 0.320" quat="0.71448 0.58573 0.24262 0.29595" fovy="45"/>
+
 
     <body name="base" pos="0 0 0.174">
       <!-- 屎黄色，174毫米离地，174要写在body里而不是geom -->
-      <geom type="mesh" mesh="base_mesh" rgba="0.902 0.886 0.725 0" contype="0" conaffinity="0"/>
+      <geom type="mesh" mesh="base_mesh" group="0" rgba="0.902 0.886 0.725 0.0" contype="0" conaffinity="0"/>
       <site name="b00" pos=" 0.0125  0         -0.0085"/>
       <site name="b01" pos="-0.00625  0.010825 -0.0085"/>
       <site name="b02" pos="-0.00625 -0.010825 -0.0085"/>
@@ -37,7 +42,7 @@
       <!-- geom里的size只控制半高，一半的厚度，球关节的位置在body的pos里调整 -->
       <body name="disc0" pos="0 0 0.00895">
         <joint name="ball0" type="ball"/>
-        <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="1.0 0.0 0.0 1.0"/>
+        <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="1.0 0.0 0.0 1.0" group="1"/>
         <site name="s00" pos=" 0.0125  0         0"/>
         <site name="s01" pos="-0.00625  0.010825 0"/>
         <site name="s02" pos="-0.00625 -0.010825 0"/>
@@ -45,7 +50,7 @@
         <!-- ===== DISC1 ===== -->
         <body name="disc1" pos="0 0 0.016">
           <joint name="ball1" type="ball"/>
-          <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="1.0 0.4 0.0 1.0"/>
+          <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="1.0 0.4 0.0 1.0" group="1"/>
           <site name="s10" pos=" 0.0125  0         0"/>
           <site name="s11" pos="-0.00625  0.010825 0"/>
           <site name="s12" pos="-0.00625 -0.010825 0"/>
@@ -53,7 +58,7 @@
           <!-- ===== DISC2 ===== -->
           <body name="disc2" pos="0 0 0.016">
             <joint name="ball2" type="ball"/>
-            <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="1.0 0.8 0.0 1.0"/>
+            <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="1.0 0.8 0.0 1.0" group="1"/>
             <site name="s20" pos=" 0.0125  0         0"/>
             <site name="s21" pos="-0.00625  0.010825 0"/>
             <site name="s22" pos="-0.00625 -0.010825 0"/>
@@ -61,7 +66,7 @@
             <!-- ===== DISC3 ===== -->
             <body name="disc3" pos="0 0 0.016">
               <joint name="ball3" type="ball"/>
-              <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="0.8 1.0 0.0 1.0"/>
+              <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="0.8 1.0 0.0 1.0" group="1"/>
               <site name="s30" pos=" 0.0125  0         0"/>
               <site name="s31" pos="-0.00625  0.010825 0"/>
               <site name="s32" pos="-0.00625 -0.010825 0"/>
@@ -69,7 +74,7 @@
               <!-- ===== DISC4 ===== -->
               <body name="disc4" pos="0 0 0.016">
                 <joint name="ball4" type="ball"/>
-                <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="0.4 1.0 0.0 1.0"/>
+                <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="0.4 1.0 0.0 1.0" group="1"/>
                 <site name="s40" pos=" 0.0125  0         0"/>
                 <site name="s41" pos="-0.00625  0.010825 0"/>
                 <site name="s42" pos="-0.00625 -0.010825 0"/>
@@ -77,7 +82,7 @@
                 <!-- ===== DISC5 (interface between lower & upper) ===== -->
                 <body name="disc5" pos="0 0 0.016">
                   <joint name="ball5" type="ball"/>
-                  <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="0.0 1.0 0.0 1.0"/>
+                  <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="0.0 1.0 0.0 1.0" group="1"/>
                   <site name="s50" pos=" 0.0125  0         0"/>
                   <site name="s51" pos="-0.00625  0.010825 0"/>
                   <site name="s52" pos="-0.00625 -0.010825 0"/>
@@ -85,7 +90,7 @@
                   <!-- ===== DISC6 ===== -->
                   <body name="disc6" pos="0 0 0.016">
                     <joint name="ball6" type="ball"/>
-                    <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="0.0 1.0 0.4 1.0"/>
+                    <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="0.0 1.0 0.4 1.0" group="1"/>
                     <site name="s60" pos=" 0.0125  0         0"/>
                     <site name="s61" pos="-0.00625  0.010825 0"/>
                     <site name="s62" pos="-0.00625 -0.010825 0"/>
@@ -93,7 +98,7 @@
                     <!-- ===== DISC7 ===== -->
                     <body name="disc7" pos="0 0 0.016">
                       <joint name="ball7" type="ball"/>
-                      <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="0.0 1.0 0.8 1.0"/>
+                      <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="0.0 1.0 0.8 1.0" group="1"/>
                       <site name="s70" pos=" 0.0125  0         0"/>
                       <site name="s71" pos="-0.00625  0.010825 0"/>
                       <site name="s72" pos="-0.00625 -0.010825 0"/>
@@ -101,7 +106,7 @@
                       <!-- ===== DISC8 ===== -->
                       <body name="disc8" pos="0 0 0.016">
                         <joint name="ball8" type="ball"/>
-                        <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="0.0 0.8 1.0 1.0"/>
+                        <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="0.0 0.8 1.0 1.0" group="1"/>
                         <site name="s80" pos=" 0.0125  0         0"/>
                         <site name="s81" pos="-0.00625  0.010825 0"/>
                         <site name="s82" pos="-0.00625 -0.010825 0"/>
@@ -109,7 +114,7 @@
                         <!-- ===== DISC9 (TIP) ===== -->
                         <body name="disc9" pos="0 0 0.016">
                           <joint name="ball9" type="ball"/>
-                          <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="0.0 0.4 1.0 1.0"/>
+                          <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="0.0 0.4 1.0 1.0" group="1"/>
                           <site name="s90" pos=" 0.0125  0         0"/>
                           <site name="s91" pos="-0.00625  0.010825 0"/>
                           <site name="s92" pos="-0.00625 -0.010825 0"/>
@@ -117,7 +122,7 @@
                           <!-- ===== DISC10 (TIP) ===== -->
                           <body name="disc10" pos="0 0 0.016">
                             <joint name="ball10" type="ball"/>
-                            <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="0.0 0.0 1.0 1.0"/>
+                            <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="0.0 0.0 1.0 1.0" group="1"/>
                             <site name="s100" pos=" 0.0125  0         0"/>
                             <site name="s101" pos="-0.00625  0.010825 0"/>
                             <site name="s102" pos="-0.00625 -0.010825 0"/>
@@ -125,7 +130,7 @@
                             <!-- ===== DISC11 (TIP) ===== -->
                             <body name="disc11" pos="0 0 0.016">
                               <joint name="ball11" type="ball"/>
-                              <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="0.4 0.0 1.0 1.0"/>
+                              <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="0.4 0.0 1.0 1.0" group="1"/>
                               <site name="s110" pos=" 0.0125  0         0"/>
                               <site name="s111" pos="-0.00625  0.010825 0"/>
                               <site name="s112" pos="-0.00625 -0.010825 0"/>
@@ -133,7 +138,7 @@
                               <!-- ===== DISC12 (TIP) ===== -->
                               <body name="disc12" pos="0 0 0.016">
                                 <joint name="ball12" type="ball"/>
-                                <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="0.8 0.0 1.0 1.0"/>
+                                <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="0.8 0.0 1.0 1.0" group="1"/>
                                 <site name="s120" pos=" 0.0125  0         0"/>
                                 <site name="s121" pos="-0.00625  0.010825 0"/>
                                 <site name="s122" pos="-0.00625 -0.010825 0"/>
@@ -141,7 +146,7 @@
                                 <!-- ===== DISC13 (TIP) ===== -->
                                 <body name="disc13" pos="0 0 0.016">
                                   <joint name="ball13" type="ball"/>
-                                  <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="1.0 0.0 0.8 1.0"/>
+                                  <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="1.0 0.0 0.8 1.0" group="1"/>
                                   <site name="s130" pos=" 0.0125  0         0"/>
                                   <site name="s131" pos="-0.00625  0.010825 0"/>
                                   <site name="s132" pos="-0.00625 -0.010825 0"/>
@@ -149,7 +154,7 @@
                                   <!-- ===== DISC14 (TIP) ===== -->
                                   <body name="disc14" pos="0 0 0.016">
                                     <joint name="ball14" type="ball"/>
-                                    <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="1.0 0.0 0.4 1.0"/>
+                                    <geom type="cylinder" size="0.02 0.008" contype="0" conaffinity="0" rgba="1.0 0.0 0.4 1.0" group="1"/>
                                     <site name="s140" pos=" 0.0125  0         0"/>
                                     <site name="s141" pos="-0.00625  0.010825 0"/>
                                     <site name="s142" pos="-0.00625 -0.010825 0"/>
