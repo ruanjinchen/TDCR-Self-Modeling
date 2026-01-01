@@ -791,4 +791,19 @@ python demo_generate_tdcr.py \
   --cd_points 4096 \
   --eval_fraction 0.1 \
   --eval_seed 42
+
+
+export CUDA_VISIBLE_DEVICES=1
+python demo_generate_tdcr.py \
+  --ckpt /data/fllm/code/TDCR-Self-Modeling/runs_final/sim_5m_with_base_hybrid_bighead_tau0.8/ckpts/latest.pt \
+  --data_dir datasets/sim/5m_with_base \
+  --split test \
+  --demo_out demo_out/sim_5m_with_base_hybrid_bighead_tau0.8 \
+  --sampler heun \
+  --sample_steps 50 \
+  --prior_std 0.5 \
+  --rgb_key rgb \
+  --cd_points 4096 \
+  --eval_fraction 0.1 \
+  --eval_seed 42
 '''
