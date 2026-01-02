@@ -186,11 +186,16 @@ python train_flowmatching.py \
   
 
 -------------------------------------------------------------------------------------------------------------------------
-
-
+-------------------------------------------------------------------------------------------------------------------------
+--------------------------------------------------------SIM 5------------------------------------------------------------
+-------------------------------------------------------------------------------------------------------------------------
+-------------------------------------------------------------------------------------------------------------------------
 
 sim 5节 有base的，10000组数据 mlp版本 有RGB H100：
-√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√
+√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√
+评估完成 
+[Demo] Done. Samples=1000 mean_CD=0.00006432 std_CD=0.00000758 mean_EMD=0.00198901 std_EMD=0.00111620
+[Demo] Done. Samples=1000 mean_CD=0.00008781 std_CD=0.00000708 mean_EMD=0.00200824 std_EMD=0.00111626
 [epoch 0500] CD-L2(cond) mean = 0.000029
 export CUDA_VISIBLE_DEVICES=4
 python train_flowmatching.py \
@@ -207,55 +212,11 @@ python train_flowmatching.py \
   --sample_steps 100 \
   --out_dir runs_final/sim_5m_with_base_mlp_12_27
 
-sim 5节 没有base的，10000组数据 mlp版本 有RGB A100：
-[epoch 0500] CD-L2(cond) mean = 0.000028
-√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√
-export CUDA_VISIBLE_DEVICES=3
-python train_flowmatching.py \
-  --data_dir datasets/sim/5m_no_base \
-  --batch_size 8 --epochs 500 --save_every 20 \
-  --tr_max_sample_points 20000 --te_max_sample_points 20000 \
-  --cond_mode motors \
-  --pf_backbone mlp \
-  --use_cosine_lr \
-  --use_rgb --rgb_key rgb \
-  --lambda_color 0.05 \
-  --t_beta_a 3.0 \
-  --point_prior_std 0.5 \
-  --sample_steps 100 \
-  --out_dir runs_final/sim_5m_no_base_mlp_12_27
-
-
-sim 5节 有base的，10000组数据 hybrid版本 有RGB H100：
-停止于Epoch 363 12月30日上午9点40分
-[epoch 0340] CD-L2(cond) mean = 0.000150
-[epoch 0360] CD-L2(cond) mean = 0.000203
-下面的参数得到的最低的：[epoch 0300] CD-L2(cond) mean = 0.000101
-参数不太行
-export CUDA_VISIBLE_DEVICES=4
-python train_flowmatching.py \
-  --data_dir datasets/sim/5m_with_base \
-  --batch_size 8 --epochs 500 --save_every 20 \
-  --tr_max_sample_points 20000 --te_max_sample_points 20000 \
-  --cond_mode motors \
-  --pf_backbone hybrid \
-  --emb_dim 64 --width 256 --depth 4 --cfg_drop_p 0.0 \
-  --ctx_dim 16 \
-  --ctx_emb_dim 64 \
-  --ctx_stage_channels 80 112 112 \
-  --ctx_stage_blocks 2 2 2 \
-  --ctx_stage_res 24 16 8 \
-  --ctx_with_se --ctx_with_global --ctx_voxel_normalize \
-  --ctx_t_gate_tau 0.97 --ctx_t_gate_k 12 \
-  --use_cosine_lr \
-  --use_rgb --rgb_key rgb \
-  --lambda_color 0.05 \
-  --t_beta_a 3.0 \
-  --point_prior_std 0.5 \
-  --sample_steps 100 \
-  --out_dir runs_final/sim_5m_with_base_hybrid_12_28
-
-
+sim5节 有base的，10000组数据，Hybrid版本，全量参数，H100，训练完成
+√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√
+评估完成 
+[Demo] Done. Samples=1000 mean_CD=0.00006055 std_CD=0.00001052 mean_EMD=0.00191688 std_EMD=0.00110042
+[Demo] Done. Samples=1000 mean_CD=0.00008157 std_CD=0.00000960 mean_EMD=0.00193422 std_EMD=0.00110057
 export CUDA_VISIBLE_DEVICES=1
 python train_flowmatching.py \
   --data_dir datasets/sim/5m_with_base \
@@ -277,7 +238,25 @@ python train_flowmatching.py \
   --t_beta_a 3.0 \
   --point_prior_std 0.5 \
   --sample_steps 50 \
-  --out_dir runs_final/sim_5m_with_base_hybrid_bighead_tau0.97
+  --out_dir runs_final/sim_5m_with_base_hybrid_1_2
+
+sim 5节 没有base的，10000组数据 mlp版本 有RGB A100：
+[epoch 0500] CD-L2(cond) mean = 0.000028
+√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√√
+export CUDA_VISIBLE_DEVICES=3
+python train_flowmatching.py \
+  --data_dir datasets/sim/5m_no_base \
+  --batch_size 8 --epochs 500 --save_every 20 \
+  --tr_max_sample_points 20000 --te_max_sample_points 20000 \
+  --cond_mode motors \
+  --pf_backbone mlp \
+  --use_cosine_lr \
+  --use_rgb --rgb_key rgb \
+  --lambda_color 0.05 \
+  --t_beta_a 3.0 \
+  --point_prior_std 0.5 \
+  --sample_steps 100 \
+  --out_dir runs_final/sim_5m_no_base_mlp_12_27
 
   
 sim 5节 没有base的，10000组数据 hybrid版本 有RGB H100：
