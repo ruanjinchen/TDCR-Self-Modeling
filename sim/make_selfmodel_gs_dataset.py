@@ -191,6 +191,9 @@ def get_cameras_from_mujoco(xml_path: Path, cam_names: Optional[List[str]] = Non
         nm = all_names[cid]
         C = np.asarray(data.cam_xpos[cid], dtype=np.float32).reshape(3)
         R = np.asarray(data.cam_xmat[cid], dtype=np.float32).reshape(3, 3)
+        # ✅ MuJoCo/OpenGL -> COLMAP：翻转相机 y、z 轴
+        R = R.copy()
+        R[:, 1:3] *= -1
         fovy_deg = float(model.cam_fovy[cid]) if float(model.cam_fovy[cid]) > 0 else float(model.vis.global_.fovy)
         fovy_rad = float(np.deg2rad(fovy_deg))
         cams.append(CamInfo(name=nm, cam_id=cid, R_c2w=R, C_w=C, fovy_rad=fovy_rad))
