@@ -1244,76 +1244,118 @@ def main():
 if __name__ == "__main__":
     main()
 '''
-python tdcr_to_vsm.py preview `
-  --pc_dir 2m_no_base/pointcloud `
-  --motor_dir 2m_no_base/motor `
-  --xml tdcr2.xml `
-  --global_norm_json 2m_no_base/global_norm_scope-all_anchor-origin.json `
-  --k 5 `
+python tdcr_to_vsm.py preview \
+  --pc_dir 2m_no_base/pointcloud \
+  --motor_dir 2m_no_base/motor \
+  --xml tdcr2.xml \
+  --global_norm_json 2m_no_base/global_norm_scope-all_anchor-origin.json \
+  --k 5 \
   --normal_len 0.01 --normal_step 2
 
 
-python tdcr_to_vsm.py preview `
-  --pc_dir 2m_with_base/pointcloud `
-  --motor_dir 2m_with_base/motor `
-  --xml tdcr2.xml `
-  --global_norm_json 2m_with_base/global_norm_scope-all_anchor-origin.json `
-  --k 5 `
+python tdcr_to_vsm.py preview \
+  --pc_dir 2m_with_base/pointcloud \
+  --motor_dir 2m_with_base/motor \
+  --xml tdcr2.xml \
+  --global_norm_json 2m_with_base/global_norm_scope-all_anchor-origin.json \
+  --k 5 \
   --normal_len 0.01 --normal_step 2
   
-python tdcr_to_vsm.py preview `
-  --pc_dir 5m_with_base/pointcloud `
-  --motor_dir 5m_with_base/motor `
-  --xml tdcr2.xml `
-  --global_norm_json 5m_with_base/global_norm_scope-all_anchor-origin.json `
-  --k 5 `
+python tdcr_to_vsm.py preview \
+  --pc_dir 5m_with_base/pointcloud \
+  --motor_dir 5m_with_base/motor \
+  --xml tdcr2.xml \
+  --global_norm_json 5m_with_base/global_norm_scope-all_anchor-origin.json \
+  --k 5 \
   --normal_len 0.01 --normal_step 2
 
-python tdcr_to_vsm.py build `
-  --pc_dir 2m_with_base/pointcloud `
-  --motor_dir 2m_with_base/motor `
-  --xml tdcr2.xml `
-  --global_norm_json 2m_with_base/global_norm_scope-all_anchor-origin.json `
-  --out_dir data/tdcr_2m_with_base_vsm `
-  --vsm_root . `
-  --seed 44 `
-  --test_frac 0.1 `
-  --voxel_size 0.002 `
+
+  
+python tdcr_to_vsm.py build \
+  --pc_dir 2m_with_base/pointcloud \
+  --motor_dir 2m_with_base/motor \
+  --xml tdcr2.xml \
+  --global_norm_json 2m_with_base/global_norm_scope-all_anchor-origin.json \
+  --out_dir data/tdcr_2m_with_base_vsm \
+  --vsm_root . \
+  --seed 44 \
+  --test_frac 0.1 \
+  --voxel_size 0.002 \
   --npoints 20000
 
-python tdcr_to_vsm.py build `
-  --pc_dir 3m_with_base/pointcloud `
-  --motor_dir 3m_with_base/motor `
-  --xml tdcr2.xml `
-  --global_norm_json 3m_with_base/global_norm_scope-all_anchor-origin.json `
-  --out_dir data/tdcr_3m_with_base_vsm `
-  --vsm_root . `
-  --seed 43 `
-  --test_frac 0.1 `
-  --voxel_size 0.002 `
+python tdcr_to_vsm.py build \
+  --pc_dir 2m_no_base/pointcloud \
+  --motor_dir 2m_no_base/motor \
+  --xml tdcr2_no_base.xml \
+  --global_norm_json 2m_no_base/global_norm_scope-all_anchor-origin.json \
+  --out_dir vsm/tdcr_2m_no_base_vsm \
+  --vsm_root . \
+  --seed 44 \
+  --test_frac 0.1 \
+  --voxel_size 0.002 \
+  --npoints 20000
+
+python tdcr_to_vsm.py build \
+  --pc_dir 3m_with_base/pointcloud \
+  --motor_dir 3m_with_base/motor \
+  --xml tdcr3_with_base.xml \
+  --global_norm_json 3m_with_base/global_norm_scope-all_anchor-origin.json \
+  --out_dir data/tdcr_3m_with_base_vsm \
+  --vsm_root . \
+  --seed 43 \
+  --test_frac 0.1 \
+  --voxel_size 0.002 \
+  --npoints 20000
+
+python tdcr_to_vsm.py build \
+  --pc_dir 3m_no_base/pointcloud \
+  --motor_dir 3m_no_base/motor \
+  --xml tdcr3_no_base.xml \
+  --global_norm_json 3m_no_base/global_norm_scope-all_anchor-origin.json \
+  --out_dir data/tdcr_3m_no_base_vsm \
+  --vsm_root . \
+  --seed 43 \
+  --test_frac 0.1 \
+  --voxel_size 0.002 \
   --npoints 20000
   
   
-python tdcr_to_vsm.py build `
-  --pc_dir 5m_with_base/pointcloud `
-  --motor_dir 5m_with_base/motor `
-  --xml tdcr2.xml `
-  --global_norm_json 5m_with_base/global_norm_scope-all_anchor-origin.json `
-  --out_dir data/tdcr_5m_with_base_vsm `
-  --vsm_root . `
-  --seed 43 `
-  --test_frac 0.1 `
-  --voxel_size 0.002 `
+python tdcr_to_vsm.py build \
+  --pc_dir 5m_with_base/pointcloud \
+  --motor_dir 5m_with_base/motor \
+  --xml tdcr5_with_base.xml \
+  --global_norm_json 5m_with_base/global_norm_scope-all_anchor-origin.json \
+  --out_dir data/tdcr_5m_with_base_vsm \
+  --vsm_root . \
+  --seed 43 \
+  --test_frac 0.1 \
+  --voxel_size 0.002 \
   --npoints 20000
+
+
+python tdcr_to_vsm.py build \
+  --pc_dir 5m_no_base/pointcloud \
+  --motor_dir 5m_no_base/motor \
+  --xml tdcr5_no_base.xml \
+  --global_norm_json 5m_no_base/global_norm_scope-all_anchor-origin.json \
+  --out_dir data/tdcr_5m_no_base_vsm \
+  --vsm_root . \
+  --seed 43 \
+  --test_frac 0.1 \
+  --voxel_size 0.002 \
+  --npoints 20000
+  
 
 看真实的
-python tdcr_to_vsm_v2.py preview `
-  --pc_dir "K:/Datasets_TDCR_2seg/pointcloud_data" `
-  --motor_dir "K:/Datasets_TDCR_2seg/motor" `
-  --compute_global_scale `
-  --voxel_size 0.002 --npoints 20000 `
-  --normal_radius 0.03 --normal_max_nn 40 --normal_consistent_k 80 `
-  --normal_prior origin --normal_target outward `
+python tdcr_to_vsm_v2.py preview \
+  --pc_dir "K:/Datasets_TDCR_2seg/pointcloud_data" \
+  --motor_dir "K:/Datasets_TDCR_2seg/motor" \
+  --compute_global_scale \
+  --voxel_size 0.002 --npoints 20000 \
+  --normal_radius 0.03 --normal_max_nn 40 --normal_consistent_k 80 \
+  --normal_prior origin --normal_target outward \
   --k 5 --normal_len 0.01 --normal_step 2
+
+
 
 '''

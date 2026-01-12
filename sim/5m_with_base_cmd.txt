@@ -5,7 +5,7 @@ export LIBEGL_DEBUG=fatal
 阶段1:采集数据
 python tdcr_pipeline.py collect \
   --xml tdcr5_with_base.xml \
-  --nsample 5000 \
+  --nsample 10000 \
   --out_pcd_dir "5m_with_base/pointcloud" \
   --out_json_dir "5m_with_base/motor" \
   --out_rgb_dir 5m_with_base/rgb \
@@ -14,7 +14,7 @@ python tdcr_pipeline.py collect \
   --start_index 1 \
   --unique_tol 1e-6 \
   --backend auto \
-  --workers 48 \
+  --workers 16 \
   --zero_vel_each_ctrl \
   --relax_max_steps 10000
 
