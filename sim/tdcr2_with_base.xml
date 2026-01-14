@@ -31,7 +31,7 @@
 
     <body name="base" pos="0 0 0.174">
       <!-- 屎黄色，174毫米离地，174要写在body里而不是geom -->
-      <geom type="mesh" mesh="base_mesh" rgba="0.902 0.886 0.725 1.0" contype="0" conaffinity="0" group="0"/>
+      <geom type="mesh" mesh="base_mesh" rgba="0.902 0.886 0.725 1.0" contype="0" conaffinity="0" group="1"/>
       <site name="b00" pos=" 0.0125  0         -0.0085"/>
       <site name="b01" pos="-0.00625  0.010825 -0.0085"/>
       <site name="b02" pos="-0.00625 -0.010825 -0.0085"/>

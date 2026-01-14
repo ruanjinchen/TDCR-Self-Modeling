@@ -553,7 +553,7 @@ python make_selfmodel_gs_dataset.py \
   --pcd_dir 2m_no_base/pointcloud \
   --out_root 3dgs/2m_no_base \
   --seed 42 \
-  --apply_mask_to_rgb
+  --apply_mask_to_rgb --min_mask_area_frac 0.005
 
 
 python make_selfmodel_gs_dataset.py \
@@ -563,6 +563,50 @@ python make_selfmodel_gs_dataset.py \
   --pcd_dir 2m_with_base/pointcloud \
   --out_root 3dgs/2m_with_base \
   --seed 42 \
-  --apply_mask_to_rgb
+  --apply_mask_to_rgb --min_mask_area_frac 0.005
+
+----------------------------------------------------------------------------------
+
+python make_selfmodel_gs_dataset.py \
+  --xml tdcr3_no_base.xml \
+  --motor_dir 3m_no_base/motor \
+  --rgb_dir 3m_no_base/rgb \
+  --pcd_dir 3m_no_base/pointcloud \
+  --out_root 3dgs/3m_no_base \
+  --seed 42 \
+  --apply_mask_to_rgb --min_mask_area_frac 0.005
+
+
+python make_selfmodel_gs_dataset.py \
+  --xml tdcr3_with_base.xml \
+  --motor_dir 3m_with_base/motor \
+  --rgb_dir 3m_with_base/rgb \
+  --pcd_dir 3m_with_base/pointcloud \
+  --out_root 3dgs/3m_with_base \
+  --seed 42 \
+  --apply_mask_to_rgb --min_mask_area_frac 0.005
+
+
+----------------------------------------------------------------------------------
+
+python make_selfmodel_gs_dataset.py \
+  --xml tdcr5_no_base.xml \
+  --motor_dir 5m_no_base/motor \
+  --rgb_dir 5m_no_base/rgb \
+  --pcd_dir 5m_no_base/pointcloud \
+  --out_root 3dgs/5m_no_base \
+  --seed 42 \
+  --apply_mask_to_rgb --min_mask_area_frac 0.005
+
+
+python make_selfmodel_gs_dataset.py \
+  --xml tdcr5_with_base.xml \
+  --motor_dir 5m_with_base/motor \
+  --rgb_dir 5m_with_base/rgb \
+  --pcd_dir 5m_with_base/pointcloud \
+  --out_root 3dgs/5m_with_base \
+  --seed 42 \
+  --apply_mask_to_rgb --min_mask_area_frac 0.005
+
 
 '''
