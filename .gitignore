@@ -30,6 +30,7 @@ htmlcov/
 # —— 数据目录（示例）——
 datasets/
 *.pt
+*.npz
 runs/
 demo_out/
 runs_final/
