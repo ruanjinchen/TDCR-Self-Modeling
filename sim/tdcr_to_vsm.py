@@ -245,6 +245,36 @@ def load_global_norm_json(path: Path) -> Tuple[np.ndarray, float]:
     raise ValueError(f"Unsupported global norm json: {path}")
 
 
+def dump_global_norm_json(path: Path, center: np.ndarray, scale: float, meta: Optional[Dict] = None) -> None:
+    """Dump center/scale to a JSON file that this script can read via --global_norm_json.
+
+    The structure is compatible with :func:`load_global_norm_json`.
+
+    Output format (minimal):
+      {
+        "all": {
+          "center": [cx, cy, cz],
+          "scale": 0.123
+        }
+      }
+
+    You may optionally include an extra top-level "meta" dict; it will be ignored by
+    :func:`load_global_norm_json` because we always look for the "all" key.
+    """
+    ensure_dir(path.parent)
+    obj: Dict = {
+        "all": {
+            "center": [float(x) for x in np.asarray(center, dtype=np.float32).reshape(3).tolist()],
+            "scale": float(scale),
+        }
+    }
+    if meta is not None:
+        # keep it JSON-serializable
+        obj["meta"] = meta
+    with open(path, "w") as f:
+        json.dump(obj, f, indent=2)
+
+
 def compute_global_scale_origin(pc_paths: List[Path], voxel_size: float = 0.0, npoints_for_scan: int = 20000) -> float:
     """Compute global max radius around origin. (anchor=origin)."""
     if len(pc_paths) == 0:
@@ -836,6 +866,13 @@ class BuildCfg:
     compute_global_scale: bool = False  # if no global_norm_json
     scan_npoints_for_scale: int = 20000
 
+    # normalization overrides / dump
+    # If set, these will override whatever comes from --global_norm_json or --compute_global_scale.
+    #   xyz_norm = (xyz - center) / scale
+    norm_center: Optional[Tuple[float, float, float]] = None
+    norm_scale: Optional[float] = None
+    dump_global_norm_json: Optional[Path] = None
+
     # normals
     normal_radius: float = 0.03
     normal_max_nn: int = 40
@@ -896,6 +933,28 @@ def parse_args() -> argparse.Namespace:
                        help="if no global_norm_json, scan pointclouds to compute a global scale around origin")
         p.add_argument("--scan_npoints_for_scale", type=int, default=20000)
 
+        # (optional) override center/scale directly, or dump computed results to a file
+        p.add_argument(
+            "--norm_center",
+            type=float,
+            nargs=3,
+            default=None,
+            metavar=("CX", "CY", "CZ"),
+            help="override normalization center in raw coords. xyz_norm=(xyz-center)/scale",
+        )
+        p.add_argument(
+            "--norm_scale",
+            type=float,
+            default=None,
+            help="override normalization scale in raw coords. xyz_norm=(xyz-center)/scale",
+        )
+        p.add_argument(
+            "--dump_global_norm_json",
+            type=Path,
+            default=None,
+            help="dump the used normalization (center/scale) to a JSON that --global_norm_json can read later",
+        )
+
         # normals
         p.add_argument("--normal_radius", type=float, default=0.03, help="normal radius (in normalized coords if using global_norm)")
         p.add_argument("--normal_max_nn", type=int, default=40)
@@ -948,6 +1007,18 @@ def parse_args() -> argparse.Namespace:
 
 def build_cfg_from_args(args: argparse.Namespace) -> BuildCfg:
     npoints = None if (getattr(args, "npoints", 0) is None or int(args.npoints) <= 0) else int(args.npoints)
+
+    norm_center = getattr(args, "norm_center", None)
+    if norm_center is not None:
+        # argparse gives a list[float] for nargs=3
+        norm_center = tuple(float(x) for x in norm_center)
+        if len(norm_center) != 3:
+            raise ValueError("--norm_center must have exactly 3 numbers: CX CY CZ")
+
+    norm_scale = getattr(args, "norm_scale", None)
+    if norm_scale is not None:
+        norm_scale = float(norm_scale)
+
     cfg = BuildCfg(
         pc_dir=args.pc_dir,
         motor_dir=args.motor_dir,
@@ -961,6 +1032,9 @@ def build_cfg_from_args(args: argparse.Namespace) -> BuildCfg:
         global_norm_json=getattr(args, "global_norm_json", None),
         compute_global_scale=bool(getattr(args, "compute_global_scale", False)),
         scan_npoints_for_scale=int(getattr(args, "scan_npoints_for_scale", 20000)),
+        norm_center=norm_center,
+        norm_scale=norm_scale,
+        dump_global_norm_json=getattr(args, "dump_global_norm_json", None),
         normal_radius=float(getattr(args, "normal_radius", 0.03)),
         normal_max_nn=int(getattr(args, "normal_max_nn", 40)),
         normal_consistent_k=int(getattr(args, "normal_consistent_k", 80)),
@@ -1022,25 +1096,64 @@ def get_static_cam_positions(cfg: BuildCfg) -> Tuple[Optional[np.ndarray], Optio
     return None, None
 
 
-def compute_center_scale(cfg: BuildCfg, pc_paths: List[Path]) -> Tuple[np.ndarray, float]:
-    """Return (center, scale). We follow tdcr add-norm by default: anchor origin, so center=[0,0,0]."""
+def compute_center_scale(cfg: BuildCfg, pc_paths: List[Path]) -> Tuple[np.ndarray, float, Dict]:
+    """Return (center, scale, info).
+
+    Default behavior follows tdcr add-norm (anchor=origin): center=[0,0,0].
+
+    Normalization formula used by this script:
+      xyz_norm = (xyz_raw - center) / scale
+
+    Priority:
+      1) base from --global_norm_json (if given)
+      2) else base from --compute_global_scale (if set)
+      3) else base is center=0, scale=1
+      4) then apply optional overrides: --norm_center / --norm_scale
+    """
+    info: Dict = {
+        "base_source": "default",
+        "global_norm_json": None,
+        "computed": False,
+        "overrides": [],
+    }
+
+    # ----- base center/scale -----
     if cfg.global_norm_json is not None:
         c, s = load_global_norm_json(cfg.global_norm_json)
-        return c.astype(np.float32), float(s)
+        center = c.astype(np.float32)
+        scale = float(s)
+        info["base_source"] = "global_norm_json"
+        info["global_norm_json"] = str(cfg.global_norm_json)
+    else:
+        center = np.zeros(3, dtype=np.float32)
+        scale = 1.0
+        if cfg.compute_global_scale:
+            s = compute_global_scale_origin(
+                pc_paths,
+                voxel_size=float(cfg.voxel_size),
+                npoints_for_scan=int(cfg.scan_npoints_for_scale),
+            )
+            _print(f"[norm] computed global scale around origin: {s:.6f}")
+            scale = float(s)
+            info["base_source"] = "computed_global_scale_origin"
+            info["computed"] = True
+            info["voxel_size"] = float(cfg.voxel_size)
+            info["scan_npoints_for_scale"] = int(cfg.scan_npoints_for_scale)
 
-    # fallback: keep origin center
-    center = np.zeros(3, dtype=np.float32)
-    if cfg.compute_global_scale:
-        s = compute_global_scale_origin(
-            pc_paths,
-            voxel_size=float(cfg.voxel_size),
-            npoints_for_scan=int(cfg.scan_npoints_for_scale),
-        )
-        _print(f"[norm] computed global scale around origin: {s:.6f}")
-        return center, float(s)
+    # ----- overrides -----
+    if cfg.norm_center is not None:
+        c = np.asarray(cfg.norm_center, dtype=np.float32).reshape(3)
+        center = c
+        info["overrides"].append("center")
 
-    # no scaling
-    return center, 1.0
+    if cfg.norm_scale is not None:
+        scale = float(cfg.norm_scale)
+        info["overrides"].append("scale")
+
+    if not np.isfinite(scale) or scale <= 0:
+        raise ValueError(f"Invalid normalization scale={scale}. It must be finite and > 0.")
+
+    return center.astype(np.float32), float(scale), info
 
 
 def process_one(
@@ -1124,8 +1237,17 @@ def preview(cfg: BuildCfg):
     if len(ids) == 0:
         raise RuntimeError("No matched ids between pointclouds and motors.")
 
-    center, scale = compute_center_scale(cfg, [pc_map[i] for i in ids])
-    _print(f"[norm] center={center.tolist()}  scale={scale:.6f}")
+    center, scale, norm_info = compute_center_scale(cfg, [pc_map[i] for i in ids])
+    _print(f"[norm] center={center.tolist()}  scale={scale:.6f}  info={norm_info}")
+
+    if cfg.dump_global_norm_json is not None:
+        meta = {
+            **{k: v for k, v in norm_info.items()},
+            "pc_dir": str(cfg.pc_dir),
+            "formula": "xyz_norm = (xyz_raw - center) / scale; xyz_raw = xyz_norm * scale + center",
+        }
+        dump_global_norm_json(cfg.dump_global_norm_json, center=center, scale=scale, meta=meta)
+        _print(f"[norm] dumped center/scale to {cfg.dump_global_norm_json}")
 
     cam_static, cam_sns = get_static_cam_positions(cfg)
     if cam_static is not None:
@@ -1171,8 +1293,17 @@ def build(cfg: BuildCfg):
         raise RuntimeError("No matched ids between pointclouds and motors.")
     _print(f"[scan] matched ids: {len(ids)}")
 
-    center, scale = compute_center_scale(cfg, [pc_map[i] for i in ids])
-    _print(f"[norm] center={center.tolist()}  scale={scale:.6f}")
+    center, scale, norm_info = compute_center_scale(cfg, [pc_map[i] for i in ids])
+    _print(f"[norm] center={center.tolist()}  scale={scale:.6f}  info={norm_info}")
+
+    if cfg.dump_global_norm_json is not None:
+        meta = {
+            **{k: v for k, v in norm_info.items()},
+            "pc_dir": str(cfg.pc_dir),
+            "formula": "xyz_norm = (xyz_raw - center) / scale; xyz_raw = xyz_norm * scale + center",
+        }
+        dump_global_norm_json(cfg.dump_global_norm_json, center=center, scale=scale, meta=meta)
+        _print(f"[norm] dumped center/scale to {cfg.dump_global_norm_json}")
 
     cam_static, cam_sns = get_static_cam_positions(cfg)
     if cam_static is not None:
@@ -1243,6 +1374,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 '''
 python tdcr_to_vsm.py preview \
   --pc_dir 2m_no_base/pointcloud \
@@ -1345,17 +1477,60 @@ python tdcr_to_vsm.py build \
   --voxel_size 0.002 \
   --npoints 20000
   
-
-看真实的
-python tdcr_to_vsm_v2.py preview \
-  --pc_dir "K:/Datasets_TDCR_2seg/pointcloud_data" \
-  --motor_dir "K:/Datasets_TDCR_2seg/motor" \
+输出vsm的scale
+python tdcr_to_vsm.py preview \
+  --pc_dir "/data/yxk/K-data/K/fllm-sm/sim/2m_no_base/pointcloud" \
+  --motor_dir "/data/yxk/K-data/K/fllm-sm/sim/2m_no_base/motor" \
   --compute_global_scale \
-  --voxel_size 0.002 --npoints 20000 \
-  --normal_radius 0.03 --normal_max_nn 40 --normal_consistent_k 80 \
-  --normal_prior origin --normal_target outward \
-  --k 5 --normal_len 0.01 --normal_step 2
+  --voxel_size 0.002 \
+  --scan_npoints_for_scale 20000 \
+  --dump_global_norm_json "vsm_scale/2m_no_base/global_norm_scope-all_anchor-origin.json" \
+  --k 0
 
+python tdcr_to_vsm.py preview \
+  --pc_dir "/data/yxk/K-data/K/fllm-sm/sim/2m_with_base/pointcloud" \
+  --motor_dir "/data/yxk/K-data/K/fllm-sm/sim/2m_with_base/motor" \
+  --compute_global_scale \
+  --voxel_size 0.002 \
+  --scan_npoints_for_scale 20000 \
+  --dump_global_norm_json "vsm_scale/2m_with_base/global_norm_scope-all_anchor-origin.json" \
+  --k 0
+
+python tdcr_to_vsm.py preview \
+  --pc_dir "/data/yxk/K-data/K/fllm-sm/sim/3m_no_base/pointcloud" \
+  --motor_dir "/data/yxk/K-data/K/fllm-sm/sim/3m_no_base/motor" \
+  --compute_global_scale \
+  --voxel_size 0.002 \
+  --scan_npoints_for_scale 20000 \
+  --dump_global_norm_json "vsm_scale/3m_no_base/global_norm_scope-all_anchor-origin.json" \
+  --k 0
+
+python tdcr_to_vsm.py preview \
+  --pc_dir "/data/yxk/K-data/K/fllm-sm/sim/3m_with_base/pointcloud" \
+  --motor_dir "/data/yxk/K-data/K/fllm-sm/sim/3m_with_base/motor" \
+  --compute_global_scale \
+  --voxel_size 0.002 \
+  --scan_npoints_for_scale 20000 \
+  --dump_global_norm_json "vsm_scale/3m_with_base/global_norm_scope-all_anchor-origin.json" \
+  --k 0
+
+python tdcr_to_vsm.py preview \
+  --pc_dir "/data/yxk/K-data/K/fllm-sm/sim/5m_no_base/pointcloud" \
+  --motor_dir "/data/yxk/K-data/K/fllm-sm/sim/5m_no_base/motor" \
+  --compute_global_scale \
+  --voxel_size 0.002 \
+  --scan_npoints_for_scale 20000 \
+  --dump_global_norm_json "vsm_scale/5m_no_base/global_norm_scope-all_anchor-origin.json" \
+  --k 0
+
+python tdcr_to_vsm.py preview \
+  --pc_dir "/data/yxk/K-data/K/fllm-sm/sim/5m_with_base/pointcloud" \
+  --motor_dir "/data/yxk/K-data/K/fllm-sm/sim/5m_with_base/motor" \
+  --compute_global_scale \
+  --voxel_size 0.002 \
+  --scan_npoints_for_scale 20000 \
+  --dump_global_norm_json "vsm_scale/5m_with_base/global_norm_scope-all_anchor-origin.json" \
+  --k 0
 
 
 '''
