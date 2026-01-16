@@ -1,0 +1,20 @@
+{
+  "all": {
+    "center": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "scale": 0.4264179468154907
+  },
+  "meta": {
+    "base_source": "computed_global_scale_origin",
+    "global_norm_json": null,
+    "computed": true,
+    "overrides": [],
+    "voxel_size": 0.002,
+    "scan_npoints_for_scale": 20000,
+    "pc_dir": "E:\\Dataset\\TDCR\\REAL_2M\\Datasets_TDCR_2seg\\pointcloud_data",
+    "formula": "xyz_norm = (xyz_raw - center) / scale; xyz_raw = xyz_norm * scale + center"
+  }
+}
