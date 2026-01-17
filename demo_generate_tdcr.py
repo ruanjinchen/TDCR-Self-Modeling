@@ -273,6 +273,130 @@ def read_ply_xyz(path: str) -> np.ndarray:
 
 
 # ============================================================
+# Eval scale / IO helpers
+# ============================================================
+
+def load_eval_center_scale(
+    eval_norm_json: str | None,
+    eval_scale: float | None = None,
+    eval_center: List[float] | None = None,
+) -> Tuple[np.ndarray, float, Dict[str, Any]]:
+    """Resolve (center, scale) for evaluation.
+
+    We assume dataset normalization is:
+        norm = (raw - center) / scale
+    so the inverse (restore original units) is:
+        raw = norm * scale + center
+
+    Priority:
+      1) eval_norm_json (tdcr_pipeline/tdcr_to_vsm global_norm_*.json)
+      2) eval_scale + eval_center
+      3) default: center=[0,0,0], scale=1
+    """
+    center = np.zeros(3, dtype=np.float32)
+    scale = 1.0
+    info: Dict[str, Any] = {
+        'source': 'default',
+        'eval_norm_json': eval_norm_json,
+        'eval_scale_arg': eval_scale,
+        'eval_center_arg': eval_center,
+    }
+
+    if eval_norm_json:
+        with open(eval_norm_json, 'r') as f:
+            obj = json.load(f)
+        if not isinstance(obj, dict) or len(obj) == 0:
+            raise ValueError(f"Bad eval_norm_json (expect dict): {eval_norm_json}")
+        if 'all' in obj and isinstance(obj['all'], dict):
+            c = obj['all'].get('center', None)
+            s = obj['all'].get('scale', None)
+        else:
+            k0 = next(iter(obj.keys()))
+            sub = obj[k0]
+            if not isinstance(sub, dict):
+                raise ValueError(f"Bad eval_norm_json[{k0}] (expect dict): {eval_norm_json}")
+            c = sub.get('center', None)
+            s = sub.get('scale', None)
+        if c is None or s is None:
+            raise ValueError(f"eval_norm_json missing center/scale: {eval_norm_json}")
+        center = np.asarray(c, dtype=np.float32).reshape(3)
+        scale = float(s)
+        info['source'] = 'eval_norm_json'
+    else:
+        if eval_center is not None:
+            center = np.asarray(eval_center, dtype=np.float32).reshape(3)
+            info['source'] = 'eval_center_arg'
+        if eval_scale is not None:
+            scale = float(eval_scale)
+            info['source'] = 'eval_scale_arg' if info['source'] == 'default' else info['source']
+
+    if not np.isfinite(center).all():
+        raise ValueError(f"Invalid eval center: {center}")
+    if not (np.isfinite(scale) and scale > 0):
+        raise ValueError(f"Invalid eval scale: {scale}")
+
+    info['center'] = center.tolist()
+    info['scale'] = float(scale)
+    return center.astype(np.float32), float(scale), info
+
+
+def apply_eval_transform_np(xyz: np.ndarray, center: np.ndarray, scale: float) -> np.ndarray:
+    """Restore original units: raw = norm * scale + center."""
+    xyz = np.asarray(xyz, dtype=np.float32)
+    center = np.asarray(center, dtype=np.float32).reshape(1, 3)
+    return xyz * float(scale) + center
+
+
+def apply_eval_transform_torch(xyz: torch.Tensor, center_t: torch.Tensor, scale: float) -> torch.Tensor:
+    """Torch version of restore: raw = norm * scale + center.
+
+    center_t should be broadcastable to xyz (e.g. shape (1,1,3)).
+    """
+    return xyz * float(scale) + center_t
+
+
+def resolve_gt_pred_and_out_dirs(args) -> Tuple[str, str, str]:
+    """Resolve (gt_dir, pred_dir, metrics_out).
+
+    Recompute mode supports:
+      - --gt_dir + --pred_dir (explicit)
+      - --pairs_root (expects pairs_root/gt and pairs_root/pred)
+      - fallback to --demo_out (expects demo_out/gt and demo_out/pred)
+
+    metrics_out default:
+      - if --metrics_out is set -> that
+      - else -> pairs_root (recompute) or demo_out (generation)
+    """
+    # Explicit dirs override everything
+    if getattr(args, 'gt_dir', None) or getattr(args, 'pred_dir', None):
+        if not (getattr(args, 'gt_dir', None) and getattr(args, 'pred_dir', None)):
+            raise ValueError('Must provide both --gt_dir and --pred_dir when using explicit dirs.')
+        gt_dir = str(args.gt_dir)
+        pred_dir = str(args.pred_dir)
+        pair_root = os.path.commonpath([os.path.abspath(gt_dir), os.path.abspath(pred_dir)])
+    else:
+        pair_root = getattr(args, 'pairs_root', None) or getattr(args, 'demo_out', None)
+        if pair_root is None:
+            raise ValueError('Missing input folders: set --pairs_root or --demo_out (or --gt_dir/--pred_dir).')
+        gt_dir = os.path.join(str(pair_root), 'gt')
+        pred_dir = os.path.join(str(pair_root), 'pred')
+
+    if not os.path.isdir(gt_dir) or not os.path.isdir(pred_dir):
+        raise FileNotFoundError(
+            f"Expect folders: '{gt_dir}' and '{pred_dir}'. "
+            "(Each should contain matching .ply filenames.)"
+        )
+
+    metrics_out = getattr(args, 'metrics_out', None)
+    if metrics_out is None or str(metrics_out).strip() == '':
+        # default to input root
+        metrics_out = pair_root
+    metrics_out = str(metrics_out)
+    os.makedirs(metrics_out, exist_ok=True)
+    return gt_dir, pred_dir, metrics_out
+
+
+# ============================================================
 # Samplers
 # ============================================================
 @torch.no_grad()
@@ -571,16 +695,10 @@ def make_prior_like(
 # Metric recompute mode (from demo_out/gt + demo_out/pred)
 # ============================================================
 @torch.no_grad()
-def recompute_metrics_from_folder(args, device: torch.device):
-    demo_out = args.demo_out
-    gt_dir = os.path.join(demo_out, "gt")
-    pred_dir = os.path.join(demo_out, "pred")
 
-    if not os.path.isdir(gt_dir) or not os.path.isdir(pred_dir):
-        raise FileNotFoundError(
-            f"[Recompute] Expect folders: '{gt_dir}' and '{pred_dir}'. "
-            "(This should match the generation-stage output structure.)"
-        )
+def recompute_metrics_from_folder(args, device: torch.device):
+    # Resolve I/O
+    gt_dir, pred_dir, metrics_out = resolve_gt_pred_and_out_dirs(args)
 
     gt_paths = sorted(glob.glob(os.path.join(gt_dir, "*.ply")))
     pred_paths = sorted(glob.glob(os.path.join(pred_dir, "*.ply")))
@@ -611,6 +729,24 @@ def recompute_metrics_from_folder(args, device: torch.device):
     )
     selected_names = [common_names[i] for i in sel]
     print(f"[Recompute] Eval subset: {len(selected_names)}/{total} samples ({100.0 * len(selected_names) / total:.2f}%), seed={eval_seed}")
+
+    # Eval scale (restore original units)
+    center_np, scale_f, scale_info = load_eval_center_scale(
+        eval_norm_json=getattr(args, 'eval_norm_json', None),
+        eval_scale=getattr(args, 'eval_scale', None),
+        eval_center=getattr(args, 'eval_center', None),
+    )
+    print(f"[EvalScale] raw = norm * {scale_f:.8f} + center {center_np.tolist()} (source={scale_info.get('source')})")
+
+    # Export a few restored-scale samples for visual sanity check
+    export_k = int(getattr(args, 'export_original_scale_samples', 5) or 0)
+    sample_dir = getattr(args, 'original_scale_samples_dir', None)
+    if sample_dir is None or str(sample_dir).strip() == '':
+        sample_dir = os.path.join(metrics_out, 'OriginalScaleSamples')
+    if export_k > 0:
+        os.makedirs(sample_dir, exist_ok=True)
+        with open(os.path.join(sample_dir, 'transform.json'), 'w') as f:
+            json.dump(scale_info, f, ensure_ascii=False, indent=2)
 
     # Separate RNG streams so enabling/disabling EMD won't change CD results (and vice versa)
     np_rng_cd = np.random.RandomState(int(args.seed) + 1)
@@ -647,6 +783,8 @@ def recompute_metrics_from_folder(args, device: torch.device):
     cds: List[float] = []
     emds: List[float] = []
 
+    exported = 0
+
     for group_n, names_in_group in groups.items():
         group_label = f"N={group_n}" if group_n != -1 else "N=fixed_by_subsample"
         bs = int(args.batch_size)
@@ -675,6 +813,14 @@ def recompute_metrics_from_folder(args, device: torch.device):
                 gt_full.append(gt_np)
                 pred_full.append(pred_np)
 
+                # export original-scale samples for the first few pairs
+                if export_k > 0 and exported < export_k:
+                    gt_os = apply_eval_transform_np(gt_np, center_np, scale_f)
+                    pred_os = apply_eval_transform_np(pred_np, center_np, scale_f)
+                    write_ply_xyz(os.path.join(sample_dir, f"gt_{name}"), gt_os)
+                    write_ply_xyz(os.path.join(sample_dir, f"pred_{name}"), pred_os)
+                    exported += 1
+
             # ----------------------------
             # CD (Chamfer Distance)
             # ----------------------------
@@ -684,7 +830,7 @@ def recompute_metrics_from_folder(args, device: torch.device):
                 gt_cd_list = [subsample_np(a, cd_points, np_rng_cd) for a in gt_full]
                 pred_cd_list = [subsample_np(a, cd_points, np_rng_cd) for a in pred_full]
 
-                # Ensure each sample really has cd_points (otherwise stacking will break and results are ambiguous)
+                # Ensure each sample really has cd_points
                 for _name, _arr in zip(batch_names, gt_cd_list):
                     if _arr.shape[0] != cd_points:
                         raise ValueError(
@@ -697,6 +843,10 @@ def recompute_metrics_from_folder(args, device: torch.device):
                             f"[Recompute] '{_name}' pred has only {_arr.shape[0]} points (< cd_points={cd_points}). "
                             "Please reduce --cd_points."
                         )
+
+            # restore original scale BEFORE computing metrics
+            gt_cd_list = [apply_eval_transform_np(a, center_np, scale_f) for a in gt_cd_list]
+            pred_cd_list = [apply_eval_transform_np(a, center_np, scale_f) for a in pred_cd_list]
 
             gt_cd_t = torch.from_numpy(np.stack(gt_cd_list, axis=0)).to(device=device, dtype=torch.float32)
             pred_cd_t = torch.from_numpy(np.stack(pred_cd_list, axis=0)).to(device=device, dtype=torch.float32)
@@ -743,6 +893,10 @@ def recompute_metrics_from_folder(args, device: torch.device):
                             "Try setting --emd_points (or reduce --batch_size)."
                         )
 
+                # restore original scale BEFORE EMD
+                gt_emd_list = [apply_eval_transform_np(a, center_np, scale_f) for a in gt_emd_list]
+                pred_emd_list = [apply_eval_transform_np(a, center_np, scale_f) for a in pred_emd_list]
+
                 gt_emd_t = torch.from_numpy(np.stack(gt_emd_list, axis=0)).to(device=device, dtype=torch.float32)
                 pred_emd_t = torch.from_numpy(np.stack(pred_emd_list, axis=0)).to(device=device, dtype=torch.float32)
 
@@ -752,55 +906,64 @@ def recompute_metrics_from_folder(args, device: torch.device):
             # record
             for j, name in enumerate(batch_names):
                 row: Dict[str, Any] = {
-                    "name": name,
-                    "cd": f"{float(cd_vals[j]):.10f}",
+                    'name': name,
+                    'cd': f"{float(cd_vals[j]):.10f}",
                 }
                 cds.append(float(cd_vals[j]))
                 if args.use_emd and emd_vals is not None:
-                    row["emd"] = f"{float(emd_vals[j]):.10f}"
+                    row['emd'] = f"{float(emd_vals[j]):.10f}"
                     emds.append(float(emd_vals[j]))
                 all_rows.append(row)
 
-    mean_cd = float(np.mean(cds)) if cds else float("nan")
-    std_cd = float(np.std(cds)) if cds else float("nan")
-    mean_emd = float(np.mean(emds)) if emds else float("nan")
-    std_emd = float(np.std(emds)) if emds else float("nan")
+    mean_cd = float(np.mean(cds)) if cds else float('nan')
+    std_cd = float(np.std(cds)) if cds else float('nan')
+    mean_emd = float(np.mean(emds)) if emds else float('nan')
+    std_emd = float(np.std(emds)) if emds else float('nan')
 
-    print(f"[Recompute] Done. Samples={len(cds)} mean_CD={mean_cd:.8f} std_CD={std_cd:.8f}" + (f" mean_EMD={mean_emd:.8f} std_EMD={std_emd:.8f}" if args.use_emd else ""))
+    print(
+        f"[Recompute] Done. Samples={len(cds)} mean_CD={mean_cd:.8f} std_CD={std_cd:.8f}" +
+        (f" mean_EMD={mean_emd:.8f} std_EMD={std_emd:.8f}" if args.use_emd else '')
+    )
 
     # write per-sample csv
-    csv_path = os.path.join(demo_out, "metrics_per_sample.csv")
+    csv_path = os.path.join(metrics_out, 'metrics_per_sample.csv')
     write_metrics_csv(csv_path, all_rows)
 
     # write summary
     summary = {
-        "mode": "recompute_metrics",
-        "demo_out": demo_out,
-        "samples": len(cds),
-        "mean_cd": mean_cd,
-        "std_cd": std_cd,
-        "use_emd": bool(args.use_emd),
-        "mean_emd": mean_emd if args.use_emd else None,
-        "std_emd": std_emd if args.use_emd else None,
-        "cd_points": cd_points,
-        "emd_points": emd_points,
-        "batch_size": int(args.batch_size),
-        "eval_fraction": float(args.eval_fraction),
-        "eval_max_samples": int(args.eval_max_samples),
-        "eval_seed": int(eval_seed),
-        "eval_total_samples": int(total),
-        "eval_selected_samples": int(len(selected_names)),
-        "seed": int(args.seed),
-        "metrics_csv": os.path.basename(csv_path),
-        "device": str(device),
+        'mode': 'recompute_metrics',
+        'gt_dir': gt_dir,
+        'pred_dir': pred_dir,
+        'metrics_out': metrics_out,
+        'samples': len(cds),
+        'mean_cd': mean_cd,
+        'std_cd': std_cd,
+        'use_emd': bool(args.use_emd),
+        'mean_emd': mean_emd if args.use_emd else None,
+        'std_emd': std_emd if args.use_emd else None,
+        'cd_points': cd_points,
+        'emd_points': emd_points,
+        'batch_size': int(args.batch_size),
+        'eval_fraction': float(args.eval_fraction),
+        'eval_max_samples': int(args.eval_max_samples),
+        'eval_seed': int(eval_seed),
+        'eval_total_samples': int(total),
+        'eval_selected_samples': int(len(selected_names)),
+        'seed': int(args.seed),
+        'metrics_csv': os.path.basename(csv_path),
+        'device': str(device),
+        'eval_scale_info': scale_info,
+        'original_scale_samples_dir': sample_dir if export_k > 0 else None,
+        'original_scale_samples_exported': int(exported),
     }
-    with open(os.path.join(demo_out, "summary.json"), "w") as f:
+    with open(os.path.join(metrics_out, 'summary.json'), 'w') as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
 
 
 # ============================================================
 # Generation + evaluation mode (from ckpt + dataset)
 # ============================================================
+
 def generate_and_evaluate(args, device: torch.device):
     # seed (global)
     torch.manual_seed(int(args.seed))
@@ -912,6 +1075,31 @@ def generate_and_evaluate(args, device: torch.device):
     if not bool(args.no_save_ply):
         os.makedirs(out_gt, exist_ok=True)
         os.makedirs(out_pred, exist_ok=True)
+
+
+    # metrics / restored-scale export output
+    metrics_out = args.metrics_out if (getattr(args, 'metrics_out', None) not in (None, '')) else args.demo_out
+    os.makedirs(metrics_out, exist_ok=True)
+
+    # Eval scale (restore original units for fair metrics)
+    center_np, scale_f, scale_info = load_eval_center_scale(
+        eval_norm_json=getattr(args, 'eval_norm_json', None),
+        eval_scale=getattr(args, 'eval_scale', None),
+        eval_center=getattr(args, 'eval_center', None),
+    )
+    print(f"[EvalScale] raw = norm * {scale_f:.8f} + center {center_np.tolist()} (source={scale_info.get('source')})")
+
+    center_t = torch.from_numpy(center_np).to(device=device, dtype=torch.float32).view(1, 1, 3)
+
+    export_k = int(getattr(args, 'export_original_scale_samples', 5) or 0)
+    sample_dir = getattr(args, 'original_scale_samples_dir', None)
+    if sample_dir is None or str(sample_dir).strip() == '':
+        sample_dir = os.path.join(metrics_out, 'OriginalScaleSamples')
+    if export_k > 0:
+        os.makedirs(sample_dir, exist_ok=True)
+        with open(os.path.join(sample_dir, 'transform.json'), 'w') as f:
+            json.dump(scale_info, f, ensure_ascii=False, indent=2)
+    exported = 0
 
     # scan split files
     files = find_h5_files(args.data_dir, args.split)
@@ -1091,17 +1279,32 @@ def generate_and_evaluate(args, device: torch.device):
                         else:
                             write_ply_xyz(os.path.join(out_pred, name), pred_np[b, :, :3])
 
-                # CD (xyz only)
+                # Export a few restored-scale samples for visual sanity check
+                if export_k > 0 and exported < export_k:
+                    pred_np_for_export = pred_t.detach().cpu().numpy()
+                    for b, name in enumerate(names):
+                        if exported >= export_k:
+                            break
+                        gt_os = apply_eval_transform_np(gt_np[b, :, :3], center_np, scale_f)
+                        pred_os = apply_eval_transform_np(pred_np_for_export[b, :, :3], center_np, scale_f)
+                        write_ply_xyz(os.path.join(sample_dir, f"gt_{name}"), gt_os)
+                        write_ply_xyz(os.path.join(sample_dir, f"pred_{name}"), pred_os)
+                        exported += 1
+
+                # CD (xyz only) -- computed in ORIGINAL units
                 pred_cd = pred_t[..., :3]
                 gt_cd = gt_t[..., :3]
                 if cd_points is not None and cd_points > 0:
                     pred_cd = subsample_torch_per_example(pred_cd, cd_points, np_rng_cd)
                     gt_cd = subsample_torch_per_example(gt_cd, cd_points, np_rng_cd)
 
-                cd_batch = chamfer_l2(pred_cd, gt_cd)  # (B,)
+                pred_cd_eval = apply_eval_transform_torch(pred_cd, center_t, scale_f)
+                gt_cd_eval = apply_eval_transform_torch(gt_cd, center_t, scale_f)
+
+                cd_batch = chamfer_l2(pred_cd_eval, gt_cd_eval)  # (B,)
                 cd_vals = cd_batch.detach().cpu().numpy().astype(np.float64).tolist()
 
-                # EMD (optional, xyz only)
+                # EMD (optional, xyz only) -- computed in ORIGINAL units
                 emd_vals: Optional[List[float]] = None
                 if args.use_emd:
                     pred_e = pred_t[..., :3]
@@ -1111,7 +1314,11 @@ def generate_and_evaluate(args, device: torch.device):
                         gt_e = subsample_torch_per_example(gt_e, emd_points, np_rng_emd)
                     if pred_e.shape[1] != gt_e.shape[1]:
                         raise ValueError(f"[Demo] EMD requires same N. pred={pred_e.shape} gt={gt_e.shape}")
-                    emd_batch = emd_distance(pred_e, gt_e)
+
+                    pred_e_eval = apply_eval_transform_torch(pred_e, center_t, scale_f)
+                    gt_e_eval = apply_eval_transform_torch(gt_e, center_t, scale_f)
+
+                    emd_batch = emd_distance(pred_e_eval, gt_e_eval)
                     emd_vals = emd_batch.detach().cpu().numpy().astype(np.float64).tolist()
 
                 # record per-sample
@@ -1140,13 +1347,17 @@ def generate_and_evaluate(args, device: torch.device):
     )
 
     # write per-sample csv
-    os.makedirs(args.demo_out, exist_ok=True)
-    csv_path = os.path.join(args.demo_out, "metrics_per_sample.csv")
+    os.makedirs(metrics_out, exist_ok=True)
+    csv_path = os.path.join(metrics_out, "metrics_per_sample.csv")
     write_metrics_csv(csv_path, rows)
 
     # write summary
-    summary = {
-        "mode": "generate_and_eval",
+    summary = {        "mode": "generate_and_eval",
+        "demo_out": args.demo_out,
+        "metrics_out": metrics_out,
+        "eval_scale_info": scale_info,
+        "original_scale_samples_dir": sample_dir if export_k > 0 else None,
+        "original_scale_samples_exported": int(exported),
         "ckpt": args.ckpt,
         "data_dir": args.data_dir,
         "split": args.split,
@@ -1180,7 +1391,7 @@ def generate_and_evaluate(args, device: torch.device):
         "metrics_csv": os.path.basename(csv_path),
         "device": str(device),
     }
-    with open(os.path.join(args.demo_out, "summary.json"), "w") as f:
+    with open(os.path.join(metrics_out, "summary.json"), "w") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
 
 
@@ -1203,8 +1414,44 @@ def main():
     ap.add_argument("--data_dir", type=str, default=None, help="dataset root (required unless --recompute_metrics)")
     ap.add_argument("--split", type=str, default="test", help="dataset split (generation mode only)")
 
-    # Output folder (always required)
-    ap.add_argument("--demo_out", type=str, required=True, help="output folder (also used as input for --recompute_metrics)")
+    # Output / input folders
+    ap.add_argument(
+        "--demo_out",
+        type=str,
+        default=None,
+        help=(
+            "Generation output folder. In generation mode, this is where gt/ and pred/ will be written. "
+            "In recompute mode, if --pairs_root/--gt_dir/--pred_dir are not set, it falls back to demo_out/gt and demo_out/pred."
+        ),
+    )
+
+    ap.add_argument(
+        "--pairs_root",
+        type=str,
+        default=None,
+        help="[recompute] Root folder that contains 'gt/' and 'pred/' subfolders. Example: TEST/sim_5m_no_base_hybrid_1_3",
+    )
+    ap.add_argument(
+        "--gt_dir",
+        type=str,
+        default=None,
+        help="[recompute] Explicit GT folder containing .ply files. Overrides --pairs_root.",
+    )
+    ap.add_argument(
+        "--pred_dir",
+        type=str,
+        default=None,
+        help="[recompute] Explicit Pred folder containing .ply files. Overrides --pairs_root.",
+    )
+    ap.add_argument(
+        "--metrics_out",
+        type=str,
+        default=None,
+        help=(
+            "Where to write metrics_per_sample.csv / summary.json / OriginalScaleSamples. "
+            "Default: pairs_root (recompute) or demo_out (generation)."
+        ),
+    )
 
     # Performance / batching
     ap.add_argument("--batch_size", type=int, default=1, help="Batch size for generation+evaluation (and recompute). Default=1.")
@@ -1214,6 +1461,41 @@ def main():
     ap.add_argument("--use_emd", action="store_true", default=False, help="Enable EMD computation (requires compiled emd_ext).")
     ap.add_argument("--cd_points", type=int, default=0, help="Points for CD computation (<=0: use max_points/full)")
     ap.add_argument("--emd_points", type=int, default=0, help="Points for EMD computation (<=0: follow cd_points)")
+
+    ap.add_argument(
+        "--eval_norm_json",
+        type=str,
+        default=None,
+        help=(
+            "Global norm json used in dataset normalization (from tdcr_pipeline add-norm / tdcr_to_vsm compute_global_scale). "
+            "Metrics are computed after restoring original units: raw = norm * scale + center."
+        ),
+    )
+    ap.add_argument(
+        "--eval_scale",
+        type=float,
+        default=None,
+        help="If --eval_norm_json is not provided, use this scale for restoring: raw = norm * scale + center (default: 1).",
+    )
+    ap.add_argument(
+        "--eval_center",
+        type=float,
+        nargs=3,
+        default=None,
+        help="If --eval_norm_json is not provided, use this center (x y z) for restoring (default: 0 0 0).",
+    )
+    ap.add_argument(
+        "--export_original_scale_samples",
+        type=int,
+        default=5,
+        help="Export first K GT/Pred pairs (after restoring original scale) into OriginalScaleSamples. 0 disables.",
+    )
+    ap.add_argument(
+        "--original_scale_samples_dir",
+        type=str,
+        default=None,
+        help="Override export folder for OriginalScaleSamples (default: <metrics_out>/OriginalScaleSamples).",
+    )
     ap.add_argument(
         "--max_points",
         type=int,
@@ -1252,6 +1534,29 @@ def main():
     ap.add_argument("--seed", type=int, default=123)
 
     args = ap.parse_args()
+
+    # -----------------------------
+    # Argument sanity checks
+    # -----------------------------
+    if bool(args.recompute_metrics):
+        # Need an input source for GT/PRED
+        if (args.gt_dir is not None) or (args.pred_dir is not None):
+            if not (args.gt_dir and args.pred_dir):
+                raise ValueError("[Recompute] Must provide both --gt_dir and --pred_dir when using explicit dirs.")
+        else:
+            # pairs_root preferred, fallback to demo_out
+            if args.pairs_root is None and args.demo_out is None:
+                raise ValueError("[Recompute] Please provide --pairs_root (or --demo_out) as the folder containing gt/ and pred/.")
+    else:
+        # generation mode
+        if args.demo_out is None:
+            raise ValueError("[Generate] --demo_out is required in generation mode.")
+        if args.ckpt is None or args.data_dir is None:
+            raise ValueError("[Generate] --ckpt and --data_dir are required unless --recompute_metrics is set.")
+
+    # Normalize eval_center if provided
+    if args.eval_center is not None:
+        args.eval_center = list(args.eval_center)
 
     # device
     if args.device.startswith("cuda") and not torch.cuda.is_available():
