@@ -501,6 +501,39 @@ def main():
     val_frames = sorted(frames[n_test:n_test + n_val])
     train_frames = sorted(frames[n_test + n_val:])
 
+    # ------------------------------------------------------------
+    # ✅ Avoid data leakage from stage1 (.zero):
+    #    Make sure the selected zero_sid NEVER ends up in val/test.
+    #    If it does, swap it back into train.
+    #
+    # Why:
+    #   Stage1 always trains on `info_zero_train.json` (zero_sid).
+    #   If zero_sid is in test/val, then stage1 has "seen" test/val.
+    # ------------------------------------------------------------
+    if zero_sid in test_frames:
+        test_frames.remove(zero_sid)
+        if len(train_frames) > 0:
+            # swap one train frame to keep test size unchanged
+            repl = train_frames.pop(0)
+            test_frames.append(repl)
+        print(f"[split-fix] zero_sid {zero_sid:06d} was in TEST -> moved to TRAIN")
+
+    if zero_sid in val_frames:
+        val_frames.remove(zero_sid)
+        if len(train_frames) > 0:
+            # swap one train frame to keep val size unchanged
+            repl = train_frames.pop(0)
+            val_frames.append(repl)
+        print(f"[split-fix] zero_sid {zero_sid:06d} was in VAL -> moved to TRAIN")
+
+    if zero_sid not in train_frames:
+        train_frames.append(zero_sid)
+
+    # keep deterministic order
+    train_frames = sorted(train_frames)
+    val_frames = sorted(val_frames)
+    test_frames = sorted(test_frames)
+
     # build info jsons
     info_all_train = build_infos(out_root, cams, train_frames, joint_map, image_paths, w, h)
     (out_root / "info_all_train.json").write_text(json.dumps(info_all_train, indent=2), encoding="utf-8")
@@ -553,7 +586,8 @@ python make_selfmodel_gs_dataset.py \
   --pcd_dir 2m_no_base/pointcloud \
   --out_root 3dgs/2m_no_base \
   --seed 42 \
-  --apply_mask_to_rgb --min_mask_area_frac 0.005
+  --apply_mask_to_rgb --min_mask_area_frac 0.005 \
+  --val_frac 0.1 --test_frac 0.1
 
 
 python make_selfmodel_gs_dataset.py \
@@ -563,7 +597,8 @@ python make_selfmodel_gs_dataset.py \
   --pcd_dir 2m_with_base/pointcloud \
   --out_root 3dgs/2m_with_base \
   --seed 42 \
-  --apply_mask_to_rgb --min_mask_area_frac 0.005
+  --apply_mask_to_rgb --min_mask_area_frac 0.005 \
+  --val_frac 0.1 --test_frac 0.1
 
 ----------------------------------------------------------------------------------
 
@@ -574,7 +609,8 @@ python make_selfmodel_gs_dataset.py \
   --pcd_dir 3m_no_base/pointcloud \
   --out_root 3dgs/3m_no_base \
   --seed 42 \
-  --apply_mask_to_rgb --min_mask_area_frac 0.005
+  --apply_mask_to_rgb --min_mask_area_frac 0.005 \
+  --val_frac 0.1 --test_frac 0.1
 
 
 python make_selfmodel_gs_dataset.py \
@@ -584,7 +620,8 @@ python make_selfmodel_gs_dataset.py \
   --pcd_dir 3m_with_base/pointcloud \
   --out_root 3dgs/3m_with_base \
   --seed 42 \
-  --apply_mask_to_rgb --min_mask_area_frac 0.005
+  --apply_mask_to_rgb --min_mask_area_frac 0.005 \
+  --val_frac 0.1 --test_frac 0.1
 
 
 ----------------------------------------------------------------------------------
@@ -596,7 +633,8 @@ python make_selfmodel_gs_dataset.py \
   --pcd_dir 5m_no_base/pointcloud \
   --out_root 3dgs/5m_no_base \
   --seed 42 \
-  --apply_mask_to_rgb --min_mask_area_frac 0.005
+  --apply_mask_to_rgb --min_mask_area_frac 0.005 \
+  --val_frac 0.1 --test_frac 0.1
 
 
 python make_selfmodel_gs_dataset.py \
@@ -606,7 +644,8 @@ python make_selfmodel_gs_dataset.py \
   --pcd_dir 5m_with_base/pointcloud \
   --out_root 3dgs/5m_with_base \
   --seed 42 \
-  --apply_mask_to_rgb --min_mask_area_frac 0.005
+  --apply_mask_to_rgb --min_mask_area_frac 0.005 \
+  --val_frac 0.1 --test_frac 0.1
 
 
 '''
