@@ -168,6 +168,42 @@ def main():
                     help="3D point the cameras are roughly looking at (for near/far heuristic)")
     ap.add_argument("--nf_size", type=float, default=0.6,
                     help="near/far half-range: near=dist-nf_size, far=dist+nf_size")
+    ap.add_argument(
+        "--near_override",
+        type=float,
+        default=None,
+        help=(
+            "Optional: override near plane for ALL cameras. "
+            "If set, it takes precedence over --nf_size heuristic."
+        ),
+    )
+    ap.add_argument(
+        "--far_override",
+        type=float,
+        default=None,
+        help=(
+            "Optional: override far plane for ALL cameras. "
+            "If set, it takes precedence over --nf_size heuristic."
+        ),
+    )
+    ap.add_argument(
+        "--far_max",
+        type=float,
+        default=None,
+        help=(
+            "Optional: clamp far to at most this value AFTER computing it. "
+            "Useful if your far became too large and NeRF sampling becomes too sparse."
+        ),
+    )
+    ap.add_argument(
+        "--clip_ctrl",
+        action="store_true",
+        help=(
+            "If set, clip the normalized ctrl values into the expected range: "
+            "[0,1] for ctrlrange01, [-1,1] for ctrlrange-11. "
+            "This helps when raw ctrl occasionally exceeds ctrlrange."
+        ),
+    )
     ap.add_argument("--strict", action="store_true",
                     help="If set, require every sample to have masks for all cameras; else skip incomplete samples")
 
@@ -228,6 +264,25 @@ def main():
     focals = []
 
     lookat = np.asarray(args.lookat, dtype=np.float32)
+    # Keep meta info to save alongside the dataset for later debugging.
+    meta: Dict[str, object] = {
+        "root": str(root),
+        "rgb_dir": str(rgb_dir),
+        "motor_dir": str(motor_dir),
+        "xml": str(args.xml),
+        "size": int(S),
+        "mask_suffix": str(args.mask_suffix),
+        "threshold": int(args.threshold),
+        "normalize_ctrl": str(args.normalize_ctrl),
+        "lookat": [float(x) for x in args.lookat],
+        "nf_size": float(args.nf_size),
+        "near_override": (None if args.near_override is None else float(args.near_override)),
+        "far_override": (None if args.far_override is None else float(args.far_override)),
+        "far_max": (None if args.far_max is None else float(args.far_max)),
+        "clip_ctrl": bool(args.clip_ctrl),
+        "cameras": list(cam_names),
+    }
+
     for cam_name in cam_names:
         cid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, cam_name)
         if cid < 0:
@@ -257,8 +312,23 @@ def main():
         rays_d_all.append(rd)
 
         dist = float(np.linalg.norm(t_c2w - lookat))
-        near = max(0.01, dist - float(args.nf_size))
-        far = dist + float(args.nf_size)
+        # Depth range (near/far)
+        if args.near_override is not None:
+            near = float(args.near_override)
+        else:
+            near = max(0.01, dist - float(args.nf_size))
+
+        if args.far_override is not None:
+            far = float(args.far_override)
+        else:
+            far = dist + float(args.nf_size)
+
+        if args.far_max is not None:
+            far = min(far, float(args.far_max))
+
+        # Safety: ensure far is strictly larger than near
+        if not (far > near + 1e-6):
+            far = near + 1e-3
         nears.append(near)
         fars.append(far)
 
@@ -288,6 +358,12 @@ def main():
 
         ctrl_n = _normalize_ctrl(ctrl, ctrlrange, args.normalize_ctrl)
 
+        if args.clip_ctrl:
+            if args.normalize_ctrl == "ctrlrange01":
+                ctrl_n = np.clip(ctrl_n, 0.0, 1.0)
+            elif args.normalize_ctrl == "ctrlrange-11":
+                ctrl_n = np.clip(ctrl_n, -1.0, 1.0)
+
         # Load masks for all cameras
         masks_v = []
         ok = True
@@ -313,6 +389,16 @@ def main():
     images_np = np.stack(images, axis=0).astype(np.float32)  # (N,V,S,S)
     angles_np = np.stack(angles, axis=0).astype(np.float32)  # (N,DOF)
 
+    # Quick stats to help spot issues (e.g. far too large, ctrl out of range)
+    try:
+        img_mean = float(images_np.mean())
+        ang_min = float(np.min(angles_np))
+        ang_max = float(np.max(angles_np))
+        ang_std = float(np.std(angles_np))
+        print(f"[STATS] images mean={img_mean:.6f}  angles min/max/std={ang_min:.6f}/{ang_max:.6f}/{ang_std:.6f}")
+    except Exception:
+        pass
+
     print(f"[INFO] kept samples: {images_np.shape[0]} / {len(motor_files)}")
 
     # ---- save npz ----
@@ -327,6 +413,7 @@ def main():
         focal=focals,  # optional (per-view), kept for debugging/inspection
         camera_names=np.asarray(cam_names),
         stems=np.asarray(kept_stems),
+        meta=np.asarray(json.dumps(meta, ensure_ascii=False), dtype=np.string_),
     )
     print(f"[DONE] wrote {out_npz}  (N={images_np.shape[0]}, V={V}, S={S}, DOF={angles_np.shape[1]})")
 
@@ -336,13 +423,16 @@ if __name__ == "__main__":
 '''
 
 python tdcr_to_selfsim_multiview_npz.py \
-  --root 2m_no_base \
-  --xml tdcr2_no_base.xml \
-  --out_npz tdcr_multiview_100.npz \
+  --root 3m_no_base \
+  --xml tdcr3_no_base.xml \
+  --out_npz sim_3m_no_base_nf_tight.npz \
   --size 100 \
   --normalize_ctrl ctrlrange01 \
-  --nf_size 0.6 \
+  --clip_ctrl \
+  --near_override 0.01 \
+  --far_override 1.25 \
   --strict
+
 
 
 '''
