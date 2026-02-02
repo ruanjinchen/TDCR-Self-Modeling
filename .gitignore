@@ -46,3 +46,5 @@ final_demo/
 final_results/
 sim/real_2m_with_base
 sim/real_3m_with_base
+sim/test
+test_demo/
